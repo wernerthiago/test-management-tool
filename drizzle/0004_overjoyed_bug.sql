@@ -1,0 +1,1 @@
+ALTER TABLE `testRuns` ADD `runNumber` int NOT NULL;

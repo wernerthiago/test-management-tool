@@ -1,0 +1,1 @@
+ALTER TABLE `testCases` ADD `testCaseNumber` int NOT NULL;

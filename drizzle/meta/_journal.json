@@ -1,0 +1,83 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1761070183254,
+      "tag": "0000_charming_nitro",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1761070250078,
+      "tag": "0001_wooden_luke_cage",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1761161338406,
+      "tag": "0002_breezy_scalphunter",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1761242796450,
+      "tag": "0003_hot_tusk",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1761493159709,
+      "tag": "0004_overjoyed_bug",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1761563391487,
+      "tag": "0006_tired_zzzax",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1765647620703,
+      "tag": "0006_dry_martin_li",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1795768707222,
+      "tag": "0007_remove_datadog",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1795776532059,
+      "tag": "0008_remove_oauth_and_invites",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1795776538086,
+      "tag": "0009_local_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1795778232716,
+      "tag": "0010_drop_project_members",
+      "breakpoints": true
+    }
+  ]
+}
