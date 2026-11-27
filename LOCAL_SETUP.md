@@ -1,6 +1,6 @@
 # Local Development Setup
 
-This guide will help you set up the Test Management Tool for local development.
+This guide will help you set up QualityLoom for local development.
 
 ## Prerequisites
 

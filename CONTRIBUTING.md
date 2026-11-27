@@ -1,6 +1,6 @@
-# Contributing to Test Management Tool
+# Contributing to QualityLoom
 
-Thank you for your interest in contributing to the Test Management Tool! This document provides guidelines and instructions for contributing to the project.
+Thank you for your interest in contributing to QualityLoom! This document provides guidelines and instructions for contributing to the project.
 
 ## Table of Contents
 
@@ -22,8 +22,8 @@ This project adheres to a Code of Conduct that all contributors are expected to 
 ### Prerequisites
 
 - Node.js 22.x or higher
-- pnpm 8.x or higher
-- MySQL 8.0 or higher
+- pnpm, via Corepack (`corepack enable`); the version is pinned in `package.json`
+- MySQL 8.0 or higher (or Docker, to run it with `docker-compose up -d db`)
 - Git
 
 ### Local Development Setup
@@ -49,20 +49,20 @@ This project adheres to a Code of Conduct that all contributors are expected to 
 5. **Set up environment variables**:
    ```bash
    cp .env.example .env
-   # Edit .env with your local configuration
+   # The defaults match the MySQL service in docker-compose.yml
    ```
 
-6. **Set up the database**:
+6. **Start MySQL**:
    ```bash
-   pnpm db:push
+   docker-compose up -d db
    ```
 
-7. **Start the development server**:
+7. **Start the development server** (it applies database migrations on start):
    ```bash
    pnpm dev
    ```
 
-8. **Access the application** at http://localhost:3000
+8. **Open http://localhost:3000** and sign in as `admin` / `admin`. You are asked to choose a new password at first login.
 
 ## Development Workflow
 
@@ -88,9 +88,10 @@ Branch naming conventions:
 
 1. Make your changes in your feature branch
 2. Test your changes thoroughly
-3. Ensure all existing tests pass: `pnpm test` (when tests are added)
+3. Ensure type checking and the E2E suite pass: `pnpm check` and `pnpm test:e2e` (see [Testing](#testing))
 4. Add tests for new functionality
-5. Update documentation as needed
+5. Format your changes: `pnpm format`
+6. Update documentation as needed
 
 ### Keeping Your Fork Updated
 
@@ -121,7 +122,7 @@ git push origin main
 
 2. **Create a Pull Request** on GitHub from your fork to the main repository
 
-3. **Fill out the PR template** with:
+3. **Describe the PR** with:
    - Clear description of changes
    - Related issue numbers (if applicable)
    - Screenshots (for UI changes)
@@ -159,7 +160,7 @@ docs(readme): update installation instructions
 - **Indentation**: 2 spaces
 - **Quotes**: Double quotes for strings
 - **Semicolons**: Required
-- **Line length**: Maximum 100 characters
+- **Line length**: 80 characters (enforced by Prettier, `.prettierrc`)
 - **Naming**:
   - `camelCase` for variables and functions
   - `PascalCase` for components and classes
@@ -202,7 +203,8 @@ export function TestCase({ id, title, onUpdate }: TestCaseProps) {
 
 - Use Drizzle ORM for all database operations
 - Never write raw SQL unless absolutely necessary
-- Use migrations for schema changes
+- Change the schema in `drizzle/schema.ts`, then run `pnpm db:push` to generate a migration in `drizzle/` and apply it locally. Commit the generated SQL and `drizzle/meta/` files together with the schema change
+- Never edit a migration that has already been released; add a new one instead (the app applies pending migrations at startup)
 - Add indexes for frequently queried fields
 
 ## Commit Messages
@@ -293,23 +295,34 @@ When suggesting a feature, include:
 
 ### Running Tests
 
+The test suite is end-to-end (Playwright). It needs MySQL running (`docker-compose up -d db`); it creates and drops its own database and starts the app itself, so stop `pnpm dev` first (or run with `PW_WORKER_INDEX=10` to use port 3010).
+
 ```bash
-# Run all tests
-pnpm test
+# Type checking
+pnpm check
 
-# Run tests in watch mode
-pnpm test:watch
+# One-time browser install
+npx playwright install --with-deps chromium
 
-# Run tests with coverage
-pnpm test:coverage
+# Run the whole E2E suite
+pnpm test:e2e
+
+# Run one spec file, or tests matching a name
+pnpm test:e2e tests/e2e/admin.spec.ts
+pnpm test:e2e -g "should delete a user"
 ```
+
+See [tests/README.md](tests/README.md) for details.
 
 ### Writing Tests
 
-- Write tests for all new features
-- Update tests when modifying existing features
-- Aim for high test coverage (>80%)
-- Test edge cases and error conditions
+Follow the conventions in [.github/instructions/test.instructions.md](.github/instructions/test.instructions.md):
+
+- One spec file per feature, in `tests/e2e/`
+- Page Object Model: locators and page helpers live in `tests/e2e/pages/`, never in spec files
+- Tests are independent and atomic (one behavior per test) and create and delete their own data (helpers in `tests/e2e/testUtils.ts`)
+- Add `data-testid` attributes to the application when a stable locator is needed
+- Document new tests in `tests/e2e/TEST_COVERAGE.md`
 
 ## Documentation
 
@@ -331,15 +344,13 @@ If you have questions about contributing:
 
 1. Check the [documentation](docs/)
 2. Search existing [Issues](https://github.com/wernerthiago/test-management-tool/issues)
-3. Ask in [GitHub Discussions](https://github.com/wernerthiago/test-management-tool/discussions)
-4. Reach out to maintainers
+3. Open an issue with your question
 
 ## Recognition
 
-Contributors will be recognized in:
-- README.md contributors section
+Contributors are recognized in:
 - Release notes for significant contributions
-- GitHub contributors page
+- The GitHub contributors page
 
-Thank you for contributing to Test Management Tool! 🎉
+Thank you for contributing to QualityLoom! 🎉
 

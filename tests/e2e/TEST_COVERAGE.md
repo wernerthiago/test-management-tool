@@ -7,17 +7,18 @@
 
 ## Executive Summary
 
-This document provides a complete overview of the e2e test coverage for the Test Management Tool. All tests follow best practices: atomic, independent, use Page Object Model, and handle their own test data lifecycle.
+This document provides a complete overview of the e2e test coverage for QualityLoom. All tests follow best practices: atomic, independent, use Page Object Model, and handle their own test data lifecycle.
 
 ### Overall Coverage Status
 
 | Page/Feature | Total Tests | Status | Coverage Level | Test File |
 |--------------|-------------|--------|----------------|-----------|
-| Test Cases | 28 | ✅ Passing | ~94% | `testcases.spec.ts` |
-| Test Runs | 47 | ✅ Passing | ~95% | `testruns.spec.ts` |
+| Home / health check | 1 | ✅ Passing | App loads, `/health` OK | `home.spec.ts` |
+| Test Cases | 28 (1 skipped) | ✅ Passing | ~94% | `testcases.spec.ts` |
+| Test Runs | 43 (5 skipped) | ✅ Passing | ~95% | `testruns.spec.ts` |
 | Authentication | 7 | ✅ Passing | Login, first-login password change, sign out | `auth.spec.ts` |
 | Admin Panel | 9 | ✅ Passing | Users, roles, temporary passwords | `admin.spec.ts` |
-| **Total** | **91** | ✅ | - | - |
+| **Total** | **88** (82 run, 6 skipped) | ✅ | - | - |
 
 ---
 
@@ -73,7 +74,7 @@ Each test creates its own user directly in the database (`utils.createTestUser`)
 This document section provides complete coverage for the Test Runs feature (`/test-runs` and `/test-runs/:id`). All tests follow best practices: atomic, independent, use Page Object Model, and handle their own test data lifecycle.
 
 ### Current Status
-- **Total Tests**: 47 comprehensive tests
+- **Total Tests**: 43 tests (38 run, 5 skipped)
 - **Pass Rate**: 100% ✅
 - **Execution Time**: ~90 seconds (estimated)
 - **Coverage Level**: ~95% of core functionality
@@ -573,7 +574,7 @@ npx playwright test testruns.spec.ts --reporter=html
 ## Test Execution Metrics
 
 ### Expected Performance
-- **Total Execution Time**: ~90 seconds (47 tests)
+- **Total Execution Time**: ~90 seconds (43 tests)
 - **Average per Test**: ~2 seconds
 - **Parallel Workers**: Configurable (default: CPU cores)
 - **Pass Rate**: 100% ✅

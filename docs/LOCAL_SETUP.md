@@ -1,4 +1,4 @@
-# Test Management Tool - Local Setup Guide
+# QualityLoom - Local Setup Guide
 
 ## Prerequisites
 

@@ -1,4 +1,4 @@
-# Test Management Tool
+# QualityLoom
 
 A modern, full-stack test management platform built with React, TypeScript, Node.js, and MySQL. Designed to help teams organize, execute, and track their test cases and test runs efficiently with powerful analytics and automation capabilities.
 
@@ -30,7 +30,7 @@ A modern, full-stack test management platform built with React, TypeScript, Node
 - Create test runs with **TR-#** identifiers
 - Select specific test cases for each run
 - Track execution status (passed, failed, blocked, skipped, not run)
-- Real-time status updates
+- Bulk status updates for selected executions
 - Execution history and audit logs
 - **PDF export** of test run results with professional formatting
 - Edit test runs (name, description, test case selection)
@@ -67,9 +67,7 @@ A modern, full-stack test management platform built with React, TypeScript, Node
 
 **User Experience**
 - Responsive design for desktop and mobile
-- Dark mode support
 - Modern, intuitive UI with shadcn/ui components
-- Real-time updates
 - Toast notifications for user actions
 
 ## 🛠 Tech Stack
@@ -237,7 +235,7 @@ For detailed local setup instructions, see **[LOCAL_SETUP.md](LOCAL_SETUP.md)**.
 
 ## 🔌 Playwright Reporter Integration
 
-Automatically send test results from Playwright to the Test Management Tool.
+Automatically send test results from Playwright to QualityLoom.
 
 ### Setup Instructions
 
@@ -319,7 +317,7 @@ Automatically send test results from Playwright to the Test Management Tool.
    npx playwright test
    ```
 
-   Results will be automatically uploaded to the Test Management Tool!
+   Results will be automatically uploaded to QualityLoom!
 
 ## 🗄 Database Schema
 

@@ -1,6 +1,6 @@
-# Test Management Tool - Deployment Guide
+# QualityLoom - Deployment Guide
 
-This comprehensive guide covers all the infrastructure requirements, hosting options, and step-by-step instructions for deploying the Test Management Tool to make it accessible to your organization's users.
+This comprehensive guide covers all the infrastructure requirements, hosting options, and step-by-step instructions for deploying QualityLoom to make it accessible to your organization's users.
 
 ---
 
@@ -60,7 +60,7 @@ Nothing else is required: no file storage (S3), no email service, no external id
 
 ## System Architecture Overview
 
-The Test Management Tool is built with a modern full-stack architecture:
+The QualityLoom is built with a modern full-stack architecture:
 
 **Frontend:**
 - React 19 with TypeScript
@@ -965,7 +965,7 @@ top  # Check CPU usage
 
 ## Conclusion
 
-This deployment guide provides comprehensive instructions for hosting the Test Management Tool. Choose the deployment option that best fits your organization's needs, budget, and technical expertise.
+This deployment guide provides comprehensive instructions for hosting QualityLoom. Choose the deployment option that best fits your organization's needs, budget, and technical expertise.
 
 For additional assistance or custom deployment requirements, please contact your IT team or the application maintainers.
 
