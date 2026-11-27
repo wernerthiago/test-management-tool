@@ -247,8 +247,8 @@ export class TestRunDetailPage {
     }
   }
 
-  async getExecutionCount(): Promise<number> {
-    const rows = await this.executionsTable.locator('tbody tr').count();
-    return rows;
+  /** Execution rows; assert with `await expect(page.executionRows).toHaveCount(n)`, which waits for rendering. */
+  get executionRows(): Locator {
+    return this.executionsTable.locator('tbody tr');
   }
 }

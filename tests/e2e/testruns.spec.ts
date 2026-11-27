@@ -991,7 +991,7 @@ test.describe('Test Runs - Complete Coverage', () => {
       await trDetailPage.goto(testRun.id);
       
       // Verify initial count
-      expect(await trDetailPage.getExecutionCount()).toBe(2);
+      await expect(trDetailPage.executionRows).toHaveCount(2);
       
       await trDetailPage.openEditDialog();
       
@@ -1036,7 +1036,7 @@ test.describe('Test Runs - Complete Coverage', () => {
       await trDetailPage.goto(testRun.id);
       
       // Verify initial count
-      expect(await trDetailPage.getExecutionCount()).toBe(3);
+      await expect(trDetailPage.executionRows).toHaveCount(3);
       
       // Note: Removing test cases requires deselecting in the modal
       // This is complex to test through UI, so we verify the current count
@@ -1401,7 +1401,7 @@ test.describe('Test Runs - Complete Coverage', () => {
       await trDetailPage.goto(testRun.id);
       
       // Verify all features work
-      expect(await trDetailPage.getExecutionCount()).toBe(1);
+      await expect(trDetailPage.executionRows).toHaveCount(1);
       expect(await trDetailPage.getStatistic('total')).toBe('1');
       
       // Test status update
@@ -1437,7 +1437,7 @@ test.describe('Test Runs - Complete Coverage', () => {
       await trDetailPage.goto(testRun.id);
       
       // Verify all load
-      expect(await trDetailPage.getExecutionCount()).toBe(20);
+      await expect(trDetailPage.executionRows).toHaveCount(20);
       expect(await trDetailPage.getStatistic('total')).toBe('20');
       
       // Test select all
