@@ -11,3 +11,12 @@ test('home page loads and health is ok', async ({ page, utils, testUser, }) => {
   const res = await page.request.get(base + '/health');
   expect(res.status()).toBe(200);
 });
+
+test('readiness check reports the database as available', async ({ page }) => {
+  const base = process.env.BASE_URL || 'http://localhost:3000';
+
+  const res = await page.request.get(base + '/health/ready');
+
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ status: 'ready', database: true });
+});

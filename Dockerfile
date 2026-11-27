@@ -6,6 +6,11 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY . .
+# Branding is compiled into the client bundle, so it is set at build time:
+#   docker build --build-arg VITE_APP_TITLE="Acme QA" --build-arg VITE_APP_LOGO=/logo.png .
+ARG VITE_APP_TITLE=QualityLoom
+ARG VITE_APP_LOGO=
+ENV VITE_APP_TITLE=$VITE_APP_TITLE VITE_APP_LOGO=$VITE_APP_LOGO
 RUN pnpm build
 
 # Runtime stage: production dependencies, the build output and the migrations only

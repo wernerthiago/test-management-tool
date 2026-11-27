@@ -13,12 +13,12 @@ This document provides a complete overview of the e2e test coverage for QualityL
 
 | Page/Feature | Total Tests | Status | Coverage Level | Test File |
 |--------------|-------------|--------|----------------|-----------|
-| Home / health check | 1 | ✅ Passing | App loads, `/health` OK | `home.spec.ts` |
+| Home / health checks | 2 | ✅ Passing | App loads, `/health` OK, `/health/ready` reports the database | `home.spec.ts` |
 | Test Cases | 28 (1 skipped) | ✅ Passing | ~94% | `testcases.spec.ts` |
 | Test Runs | 43 (5 skipped) | ✅ Passing | ~95% | `testruns.spec.ts` |
 | Authentication | 7 | ✅ Passing | Login, first-login password change, sign out | `auth.spec.ts` |
 | Admin Panel | 9 | ✅ Passing | Users, roles, temporary passwords | `admin.spec.ts` |
-| **Total** | **88** (82 run, 6 skipped) | ✅ | - | - |
+| **Total** | **89** (83 run, 6 skipped) | ✅ | - | - |
 
 ---
 

@@ -40,6 +40,29 @@ export async function getDb() {
   return _db;
 }
 
+/** Closes the connection pool (graceful shutdown). */
+export async function closeDb() {
+  if (!_db) return;
+  await _db.$client.end();
+  _db = null;
+}
+
+/** Cheap round trip used by the readiness probe; false if the database errors or takes longer than timeoutMs. */
+export async function pingDb(timeoutMs = 2000): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>(resolve => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const ping = db.execute(sql`SELECT 1`).then(() => true, () => false);
+  try {
+    return await Promise.race([ping, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ===== Projects =====
 export async function createProject(project: InsertProject) {
   const db = await getDb();

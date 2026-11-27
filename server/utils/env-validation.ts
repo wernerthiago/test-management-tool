@@ -20,6 +20,12 @@ export function validateEnvironment() {
     process.exit(1);
   }
 
+  const initialAdminPassword = process.env.INITIAL_ADMIN_PASSWORD;
+  if (initialAdminPassword !== undefined && initialAdminPassword !== "" && initialAdminPassword.length < 8) {
+    console.error("❌ INITIAL_ADMIN_PASSWORD must be at least 8 characters long.");
+    process.exit(1);
+  }
+
   // The placeholder from .env.example is public; it must never sign sessions in production
   if (process.env.NODE_ENV === "production" && (process.env.JWT_SECRET ?? "").startsWith("your-super-secret")) {
     console.error("❌ JWT_SECRET is still the example placeholder. Generate one, e.g. `openssl rand -hex 32`.");
@@ -34,6 +40,5 @@ export function getEnvSummary() {
     nodeEnv: process.env.NODE_ENV || "development",
     hasDatabase: !!process.env.DATABASE_URL,
     hasJwtSecret: !!process.env.JWT_SECRET,
-    appTitle: process.env.VITE_APP_TITLE || "QualityLoom",
   };
 }

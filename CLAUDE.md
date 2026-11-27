@@ -43,13 +43,13 @@ Single-process full-stack TypeScript app: one Express server (`server/_core/inde
   - `/health`.
 - **`drizzle/schema.ts`** — the MySQL schema (source of truth); migrations generated into `drizzle/` with `drizzle/meta/_journal.json`. IDs are `nanoid` strings, not auto-increment.
 - **`shared/`** — constants/types/errors imported by both sides via the `@shared/*` alias (`@/*` → `client/src/*`).
-- **`server/_core/`** — server plumbing: `index.ts` (startup: env validation → `migrate()` from `./drizzle` → `ensureDefaultAdmin()` → Express), `auth.ts` (session JWT sign/verify, `toPublicUser`), `trpc.ts`, `context.ts`, `cookies.ts`, `vite.ts` (Vite is imported lazily, dev only — the production bundle must not import dev dependencies).
+- **`server/_core/`** — server plumbing: `index.ts` (startup: env validation → MySQL `GET_LOCK('qualityloom_startup')` → `migrate()` from `./drizzle` → `ensureDefaultAdmin()` → release lock → Express; SIGTERM/SIGINT graceful shutdown; `/health` liveness, `/health/ready` DB readiness), `auth.ts` (session JWT sign/verify, `toPublicUser`), `trpc.ts`, `context.ts`, `cookies.ts`, `vite.ts` (Vite is imported lazily, dev only — the production bundle must not import dev dependencies).
 
 ### Auth
 
 Local accounts only (no OAuth, no dev bypass). Session = `app_session_id` cookie holding an HS256 JWT `{ userId }` signed with `JWT_SECRET`; `server/_core/context.ts` resolves it to a `users` row. Users log in with `users.email` as the identifier — the seeded account's identifier is literally `admin`.
 
-- On startup, if no admin exists, `ensureDefaultAdmin()` creates `admin`/`admin` with `mustChangePassword = true`. The admin panel refuses to delete/demote the last admin, so this only runs on an empty install.
+- On startup, if no admin exists, `ensureDefaultAdmin()` creates `admin` with `INITIAL_ADMIN_PASSWORD` (or `admin`) and `mustChangePassword = true`. The admin panel refuses to delete/demote the last admin, so this only runs on an empty install.
 - `authedProcedure` = logged in (used only by `auth.changePassword`); `protectedProcedure` additionally rejects users with `mustChangePassword` (message `PASSWORD_CHANGE_REQUIRED_MSG`, which the client turns into a redirect to `/change-password`); `adminProcedure` additionally requires `role === "admin"`. Use `protectedProcedure` for every app feature.
 - Roles: `admin` (everything + `/admin` panel) and `user` (everything else). Every user sees every project; the `projectMembers` table is no longer used.
 - Admins create users with a temporary password (`mustChangePassword = true`); never return `passwordHash` to the client — use `toPublicUser`.
@@ -69,6 +69,7 @@ Applies to `tests/e2e/**`:
 ## Gotchas
 
 - `pnpm db:push` runs `drizzle-kit generate` first, so schema edits produce new migration SQL files in `drizzle/` — commit them alongside `schema.ts`. The journal contains two `0006_*` migrations (no `0005`); check ordering in `_journal.json` before adding more.
-- Migrations run automatically at app startup (`drizzle-orm` migrator, folder `./drizzle` relative to the working directory). `drizzle-kit` is a dev dependency and is not in the production image.
+- Migrations run automatically at app startup under a MySQL named lock, so several replicas can start at once (`drizzle-orm` migrator, folder `./drizzle` relative to the working directory). They are forward-only; don't write a migration that breaks the previous release's queries without noting it. `drizzle-kit` is a dev dependency and is not in the production image.
+- `VITE_*` variables (branding) are compiled into the client at build time; the Dockerfile takes them as `--build-arg`.
 - The `Dockerfile` builds the production image (`node dist/index.js`, `NODE_ENV=production`, non-root). `server/` and `client/` sources are not in it, only `dist/`, prod deps and `drizzle/`.
-- CI (`.github/workflows/playwright-e2e.yml`) runs only the E2E suite on PRs/pushes to `main`, with a MySQL service container.
+- CI (`.github/workflows/playwright-e2e.yml`) runs only the E2E suite on PRs/pushes to `main`, with a MySQL service container, on both MySQL 8.0 and 8.4 (matrix).

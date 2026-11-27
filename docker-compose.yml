@@ -10,7 +10,8 @@ services:
       MYSQL_USER: ${DB_USER:-test_user}
       MYSQL_PASSWORD: ${DB_PASSWORD:-test_password}
     ports:
-      - "${DB_PORT:-3306}:3306"
+      # Local machine only; the app container reaches MySQL over the compose network
+      - "127.0.0.1:${DB_PORT:-3306}:3306"
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
@@ -24,6 +25,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        VITE_APP_TITLE: ${VITE_APP_TITLE:-QualityLoom}
+        VITE_APP_LOGO: ${VITE_APP_LOGO:-}
     container_name: test-mgmt-app
     restart: unless-stopped
     depends_on:
@@ -34,6 +38,7 @@ services:
       # Required: compose refuses to start without it, so no publicly known default ever signs sessions
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (at least 32 random characters) in .env or the environment}
       TRUST_PROXY: ${TRUST_PROXY:-0}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
     ports:
       - "${APP_PORT:-3000}:3000"
 

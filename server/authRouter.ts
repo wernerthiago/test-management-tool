@@ -8,14 +8,13 @@ import * as db from "./db";
 import { loginLimiter } from "./middleware/rateLimiter";
 import { comparePassword, hashPassword } from "./utils/password";
 
-/** Login identifier and password of the account created on first start. */
+/** Login identifier of the account created on first start. */
 export const DEFAULT_ADMIN_LOGIN = "admin";
-const DEFAULT_ADMIN_PASSWORD = "admin";
 
 /**
- * Creates the admin/admin account when the database has no admin at all (first start).
- * It must change its password at first login. The admin panel refuses to remove the last admin,
- * so this only ever runs on an empty install.
+ * Creates the "admin" account when the database has no admin at all (first start), with the password
+ * from INITIAL_ADMIN_PASSWORD or "admin". It must change its password at first login either way.
+ * The admin panel refuses to remove the last admin, so this only ever runs on an empty install.
  */
 export async function ensureDefaultAdmin() {
   if ((await db.countAdmins()) > 0) return;
@@ -28,10 +27,11 @@ export async function ensureDefaultAdmin() {
     name: "Administrator",
     email: DEFAULT_ADMIN_LOGIN,
     role: "admin",
-    passwordHash: await hashPassword(DEFAULT_ADMIN_PASSWORD),
+    passwordHash: await hashPassword(process.env.INITIAL_ADMIN_PASSWORD || "admin"),
     mustChangePassword: true,
   });
-  console.log(`[Auth] Created default admin "${DEFAULT_ADMIN_LOGIN}" (password must be changed at first login)`);
+  const source = process.env.INITIAL_ADMIN_PASSWORD ? "INITIAL_ADMIN_PASSWORD" : `the default password "admin"`;
+  console.log(`[Auth] Created admin "${DEFAULT_ADMIN_LOGIN}" with ${source} (must be changed at first login)`);
 }
 
 const loginSchema = z.object({
