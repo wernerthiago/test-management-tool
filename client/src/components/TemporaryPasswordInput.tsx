@@ -2,6 +2,7 @@ import { CopyIcon, RefreshCwIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { copyToClipboard } from "@/lib/clipboard";
 
 // No look-alike characters (0/O, 1/l/I), so the password can be read aloud or retyped
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
@@ -10,23 +11,6 @@ const LENGTH = 12;
 export function generateTemporaryPassword(): string {
   const bytes = crypto.getRandomValues(new Uint32Array(LENGTH));
   return Array.from(bytes, (b) => ALPHABET[b % ALPHABET.length]).join("");
-}
-
-/** Copies text; falls back to execCommand where the Clipboard API is unavailable (plain http). */
-async function copyToClipboard(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-  const ok = document.execCommand("copy");
-  textarea.remove();
-  if (!ok) throw new Error("copy failed");
 }
 
 type Props = {

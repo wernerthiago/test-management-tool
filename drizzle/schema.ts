@@ -209,3 +209,23 @@ export const testCaseAuditLog = mysqlTable("testCaseAuditLog", {
 export type TestCaseAuditLog = typeof testCaseAuditLog.$inferSelect;
 export type InsertTestCaseAuditLog = typeof testCaseAuditLog.$inferInsert;
 
+
+/**
+ * API tokens for the Playwright reporter endpoint. Each token belongs to one project;
+ * only a SHA-256 hash is stored, the token itself is shown once at creation.
+ */
+export const apiTokens = mysqlTable("apiTokens", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  projectId: varchar("projectId", { length: 64 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  tokenHash: varchar("tokenHash", { length: 64 }).notNull().unique(),
+  tokenPrefix: varchar("tokenPrefix", { length: 16 }).notNull(), // shown in the UI to tell tokens apart
+  createdBy: varchar("createdBy", { length: 64 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow(),
+  lastUsedAt: timestamp("lastUsedAt"),
+}, (table) => ({
+  projectIdx: index("project_idx").on(table.projectId),
+}));
+
+export type ApiToken = typeof apiTokens.$inferSelect;
+export type InsertApiToken = typeof apiTokens.$inferInsert;

@@ -32,7 +32,7 @@ We aim to resolve critical vulnerabilities within 30 days of the report.
 
 These are known and documented; please do not report them as new vulnerabilities:
 
-- **The Playwright reporter endpoint (`POST /api/playwright/report`) is not authenticated.** Anyone who can reach the server can create test runs and test cases in any project. Restrict network access to it (internal network, VPN or reverse-proxy rules) until API tokens are added.
+- **Reporter API tokens have no expiry and full write access to their project's runs.** A token can only report to the project it was created in, and it can be revoked at any time in Settings > Playwright Reporter. Treat tokens as secrets (CI secret store), use one per pipeline, and revoke tokens you no longer use.
 - **Sessions are not revoked when a password changes.** A session cookie stays valid for one year or until `JWT_SECRET` is rotated (which signs everyone out).
 - **No per-project permissions.** Every signed-in user can see and change every project; only the admin panel is restricted to admins.
 - **The login rate limiter is per instance and in memory.** It allows 10 failed attempts per client IP per 15 minutes on each instance, so with N replicas the effective limit is up to N × 10, and it resets when an instance restarts.

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { nanoid } from "nanoid";
 import * as db from "./db";
+import { hashApiToken } from "./utils/apiToken";
 
 const router = Router();
 
@@ -13,22 +14,34 @@ const router = Router();
  */
 router.post("/report", async (req, res) => {
   try {
-    const { projectId, runName, results, apiKey } = req.body;
-
-    // Basic validation
-    if (!projectId || !runName || !results || !Array.isArray(results)) {
-      return res.status(400).json({
+    // Authenticate with a project API token: "Authorization: Bearer qlt_..." (created in Settings)
+    const header = req.headers.authorization ?? "";
+    const presented = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+    const token = presented ? await db.getApiTokenByHash(hashApiToken(presented)) : null;
+    if (!token) {
+      return res.status(401).json({
         success: false,
-        error: "Missing required fields: projectId, runName, results",
+        error: "Missing or invalid API token. Send 'Authorization: Bearer <token>'; create a token in the project's Settings > Playwright Reporter tab.",
       });
     }
 
-    // Optional: Validate API key if provided
-    // This allows projects to secure their Playwright reporter endpoint
-    if (apiKey) {
-      // TODO: Implement API key validation
-      // For now, we'll accept any key
+    // The token decides the project; a projectId in the body is optional but must match
+    const projectId = token.projectId;
+    if (req.body?.projectId && req.body.projectId !== projectId) {
+      return res.status(403).json({ success: false, error: "This API token belongs to a different project" });
     }
+    if (!(await db.getProjectById(projectId))) {
+      return res.status(403).json({ success: false, error: "The project for this API token no longer exists" });
+    }
+
+    const { runName, results } = req.body ?? {};
+    if (!runName || !Array.isArray(results)) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields: runName, results",
+      });
+    }
+    await db.touchApiToken(token.id);
 
     // Create a new test run
     const runId = nanoid();

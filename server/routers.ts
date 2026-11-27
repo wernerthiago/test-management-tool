@@ -7,6 +7,7 @@ import { nanoid } from "nanoid";
 import * as db from "./db";
 import { TRPCError } from "@trpc/server";
 import { comparePassword, hashPassword, validatePasswordStrength } from "./utils/password";
+import { apiTokenDisplayPrefix, generateApiToken, hashApiToken } from "./utils/apiToken";
 
 const roleSchema = z.enum(["admin", "user"]);
 const temporaryPasswordSchema = z.string().min(8, "Temporary password must be at least 8 characters");
@@ -101,6 +102,38 @@ export const appRouter = router({
         }
         await assertNotLastAdmin(input.userId);
         await db.deleteUser(input.userId);
+        return { success: true } as const;
+      }),
+  }),
+
+  apiTokens: router({
+    list: protectedProcedure
+      .input(z.object({ projectId: z.string() }))
+      .query(async ({ input }) => db.getApiTokensByProject(input.projectId)),
+
+    /** Returns the token once; afterwards only its prefix can be shown. */
+    create: protectedProcedure
+      .input(z.object({ projectId: z.string(), name: z.string().trim().min(1, "Name is required").max(255) }))
+      .mutation(async ({ ctx, input }) => {
+        if (!(await db.getProjectById(input.projectId))) {
+          throw new TRPCError({ code: "NOT_FOUND", message: "Project not found" });
+        }
+        const token = generateApiToken();
+        await db.createApiToken({
+          id: nanoid(),
+          projectId: input.projectId,
+          name: input.name,
+          tokenHash: hashApiToken(token),
+          tokenPrefix: apiTokenDisplayPrefix(token),
+          createdBy: ctx.user.id,
+        });
+        return { token };
+      }),
+
+    revoke: protectedProcedure
+      .input(z.object({ id: z.string(), projectId: z.string() }))
+      .mutation(async ({ input }) => {
+        await db.deleteApiToken(input.id, input.projectId);
         return { success: true } as const;
       }),
   }),

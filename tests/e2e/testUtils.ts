@@ -281,3 +281,33 @@ export async function signInAs(page: import('@playwright/test').Page, userId: st
     { name: 'app_session_id', value: token, domain: 'localhost', path: '/', httpOnly: true, secure: false },
   ]);
 }
+
+/** Inserts a reporter API token for a project and returns the plain token (as the UI would show once). */
+export async function createApiTokenForProject(projectId: string, name = 'e2e token') {
+  const crypto = await import('crypto');
+  const token = 'qlt_' + crypto.randomBytes(32).toString('base64url');
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  const conn = await connect();
+  await conn.query('INSERT INTO apiTokens (id, projectId, name, tokenHash, tokenPrefix, createdBy) VALUES (?, ?, ?, ?, ?, ?)', [nanoid(), projectId, name, hash, token.slice(0, 9), 'e2e']);
+  await conn.end();
+  return token;
+}
+
+export async function getTestRunsByProject(projectId: string) {
+  const conn = await connect();
+  const [rows] = await conn.query('SELECT id, name, (SELECT COUNT(*) FROM testExecutions e WHERE e.testRunId = r.id) AS executions FROM testRuns r WHERE projectId = ?', [projectId]);
+  await conn.end();
+  return rows as Array<{ id: string; name: string; executions: number }>;
+}
+
+/** Removes a project and everything the tests may have created in it. */
+export async function deleteProjectData(projectId: string) {
+  const conn = await connect();
+  await conn.query('DELETE e FROM testExecutions e JOIN testRuns r ON e.testRunId = r.id WHERE r.projectId = ?', [projectId]);
+  await conn.query('DELETE v FROM testCaseCustomFieldValues v JOIN testCases c ON v.testCaseId = c.id WHERE c.projectId = ?', [projectId]);
+  for (const table of ['testRuns', 'testCases', 'customFields', 'folders', 'apiTokens']) {
+    await conn.query(`DELETE FROM ${table} WHERE projectId = ?`, [projectId]);
+  }
+  await conn.query('DELETE FROM projects WHERE id = ?', [projectId]);
+  await conn.end();
+}

@@ -239,53 +239,54 @@ Automatically send test results from Playwright to QualityLoom.
 
 ### Setup Instructions
 
-1. **Get Project ID:**
-   - Go to **Settings** > **Playwright Reporter** tab
-   - Copy your Project ID
+1. **Create an API token:** in QualityLoom open the project, go to **Settings** > **Playwright Reporter** and click **New token**. Copy it (it is shown only once) and store it as a CI secret named `QUALITYLOOM_TOKEN`. The token decides which project the results go to; create one per pipeline so each can be revoked on its own.
 
-2. **Create Custom Reporter:**
-
-   Create `custom-reporter.ts` in your Playwright project:
+2. **Add the reporter** as `qualityloom-reporter.ts` in your Playwright project (the Settings tab shows the same code with your QualityLoom URL filled in):
 
    ```typescript
-   import { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+   // Env: QUALITYLOOM_TOKEN (required), QUALITYLOOM_URL (your QualityLoom address)
+   import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 
-   class TestManagementReporter implements Reporter {
-     private results: any[] = [];
+   const STATUS: Record<string, string> = {
+     passed: 'passed', failed: 'failed', timedOut: 'failed',
+     skipped: 'skipped', interrupted: 'not_run',
+   };
+   const ANSI = /\u001b\[[0-9;]*m/g;
+
+   export default class QualityLoomReporter implements Reporter {
+     // Keyed by test id: a retried test reports only its final attempt
+     private results = new Map<string, object>();
 
      onTestEnd(test: TestCase, result: TestResult) {
-       this.results.push({
-         testCaseTitle: test.title,
-         status: result.status === 'passed' ? 'passed' : 
-                 result.status === 'failed' ? 'failed' : 
-                 result.status === 'skipped' ? 'skipped' : 'not_run',
+       this.results.set(test.id, {
+         testCaseTitle: test.title, // put "TC-<n>" in the title to link an existing case
+         status: STATUS[result.status] ?? 'not_run',
          duration: result.duration,
-         errorMessage: result.error?.message,
+         errorMessage: result.error?.message?.replace(ANSI, ''),
        });
      }
 
      async onEnd() {
-       const response = await fetch('YOUR_APP_URL/api/playwright/report', {
+       const url = process.env.QUALITYLOOM_URL || 'http://localhost:3000';
+       const token = process.env.QUALITYLOOM_TOKEN;
+       if (!token) {
+         console.error('[QualityLoom] QUALITYLOOM_TOKEN is not set; results not uploaded');
+         return;
+       }
+       const res = await fetch(`${url}/api/playwright/report`, {
          method: 'POST',
-         headers: { 'Content-Type': 'application/json' },
+         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
          body: JSON.stringify({
-           projectId: 'YOUR_PROJECT_ID',
            runName: `Automated Run - ${new Date().toISOString()}`,
-           results: this.results,
+           results: [...this.results.values()],
          }),
        });
-       
-       const data = await response.json();
-       console.log('Test results uploaded:', data);
+       console.log(`[QualityLoom] ${res.status}`, await res.json());
      }
    }
-
-   export default TestManagementReporter;
    ```
 
-3. **Configure Playwright:**
-
-   Add the reporter to `playwright.config.ts`:
+3. **Configure Playwright** in `playwright.config.ts`:
 
    ```typescript
    import { defineConfig } from '@playwright/test';
@@ -293,31 +294,26 @@ Automatically send test results from Playwright to QualityLoom.
    export default defineConfig({
      reporter: [
        ['list'],
-       ['./custom-reporter.ts']
+       ['./qualityloom-reporter.ts'],
      ],
    });
    ```
 
-4. **Link to Existing Test Cases (Optional):**
-
-   Include **TC-#** identifier in test names to link to existing test cases:
+4. **Link to existing test cases (optional):** include the **TC-#** identifier in the test title. Tests without one are matched by exact title, and a new automated test case is created when nothing matches.
 
    ```typescript
    test('TC-5 should login successfully', async ({ page }) => {
-     // This will link to existing TC-5 in the system
-   });
-
-   test('New feature test', async ({ page }) => {
-     // This will create a new test case automatically
+     // Linked to the existing TC-5
    });
    ```
 
-5. **Run Tests:**
+5. **Run your tests** with the secret available:
+
    ```bash
-   npx playwright test
+   QUALITYLOOM_URL=https://qualityloom.example.internal QUALITYLOOM_TOKEN=qlt_... npx playwright test
    ```
 
-   Results will be automatically uploaded to QualityLoom!
+   Each run appears under **Test Runs**, and the token's "Last used" time updates in Settings.
 
 ## 🗄 Database Schema
 
@@ -385,7 +381,7 @@ pnpm start
 - **Branding** (`VITE_APP_TITLE`, `VITE_APP_LOGO`) is compiled in at build time (`docker build --build-arg ...`); setting it at runtime has no effect.
 - **Know up front:**
   - Migrations are forward-only and some are destructive; rollback means restoring the pre-upgrade database backup and running the previous image.
-  - The Playwright reporter endpoint `POST /api/playwright/report` is unauthenticated; restrict network access to it.
+  - The Playwright reporter endpoint `POST /api/playwright/report` requires a per-project API token (created in the project's Settings).
   - The login rate limiter is in memory per instance (effective limit up to N × 10 with N replicas).
 - `docker-compose.yml` is for local development and evaluation only.
 
@@ -422,12 +418,12 @@ Login itself is a REST endpoint: `POST /api/auth/login`.
 
 ```
 POST /api/playwright/report
+Authorization: Bearer <project API token>
 Content-Type: application/json
 
 {
-  "projectId": "string",
   "runName": "string",
-  "description": "string (optional)",
+  "projectId": "string (optional; must match the token's project)",
   "results": [
     {
       "testCaseTitle": "string (can include TC-# identifier)",
@@ -447,6 +443,8 @@ Content-Type: application/json
   "executionCount": "number"
 }
 ```
+
+Errors: `401` missing or invalid token (including revoked tokens), `403` the token belongs to another project or its project was deleted, `400` missing `runName` or `results`.
 
 ## 🤝 Contributing
 

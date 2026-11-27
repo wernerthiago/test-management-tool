@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { PlusIcon, TrashIcon, CodeIcon, FolderIcon, SettingsIcon } from "lucide-react";
 import { toast } from "sonner";
+import { ApiTokensCard } from "@/components/ApiTokensCard";
 import { useLocation } from "wouter";
 
 export default function Settings() {
@@ -185,44 +186,52 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
   reporter: [
     ['list'],
-    ['./custom-reporter.ts']
+    ['./qualityloom-reporter.ts'],
   ],
 });
 
-// custom-reporter.ts
-import { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+// qualityloom-reporter.ts
+// Env: QUALITYLOOM_TOKEN (required, from Settings > Playwright Reporter),
+//      QUALITYLOOM_URL (default ${window.location.origin})
+import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 
-class TestManagementReporter implements Reporter {
-  private results: any[] = [];
+const STATUS: Record<string, string> = {
+  passed: 'passed', failed: 'failed', timedOut: 'failed',
+  skipped: 'skipped', interrupted: 'not_run',
+};
+const ANSI = /\\u001b\\[[0-9;]*m/g;
+
+export default class QualityLoomReporter implements Reporter {
+  // Keyed by test id: a retried test reports only its final attempt
+  private results = new Map<string, object>();
 
   onTestEnd(test: TestCase, result: TestResult) {
-    this.results.push({
-      testCaseTitle: test.title,
-      status: result.status === 'passed' ? 'passed' : 
-              result.status === 'failed' ? 'failed' : 
-              result.status === 'skipped' ? 'skipped' : 'not_run',
+    this.results.set(test.id, {
+      testCaseTitle: test.title, // put "TC-<n>" in the title to link an existing case
+      status: STATUS[result.status] ?? 'not_run',
       duration: result.duration,
-      errorMessage: result.error?.message,
+      errorMessage: result.error?.message?.replace(ANSI, ''),
     });
   }
 
   async onEnd() {
-    const response = await fetch('YOUR_APP_URL/api/playwright/report', {
+    const url = process.env.QUALITYLOOM_URL || '${window.location.origin}';
+    const token = process.env.QUALITYLOOM_TOKEN;
+    if (!token) {
+      console.error('[QualityLoom] QUALITYLOOM_TOKEN is not set; results not uploaded');
+      return;
+    }
+    const res = await fetch(\`\${url}/api/playwright/report\`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: \`Bearer \${token}\` },
       body: JSON.stringify({
-        projectId: 'YOUR_PROJECT_ID',
         runName: \`Automated Run - \${new Date().toISOString()}\`,
-        results: this.results,
+        results: [...this.results.values()],
       }),
     });
-    
-    const data = await response.json();
-    console.log('Test results uploaded:', data);
+    console.log(\`[QualityLoom] \${res.status}\`, await res.json());
   }
-}
-
-export default TestManagementReporter;`;
+}`;
 
   return (
     <div className="space-y-6">
@@ -513,6 +522,7 @@ export default TestManagementReporter;`;
           </TabsContent>
 
           <TabsContent value="playwright" className="space-y-4">
+            {selectedProjectId && <ApiTokensCard projectId={selectedProjectId} />}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -531,12 +541,6 @@ export default TestManagementReporter;`;
                   </code>
                 </div>
                 <div>
-                  <h4 className="font-medium mb-2">Project ID</h4>
-                  <code className="block p-3 bg-muted rounded-md text-sm">
-                    {selectedProjectId}
-                  </code>
-                </div>
-                <div>
                   <h4 className="font-medium mb-2">Custom Reporter Implementation</h4>
                   <pre className="p-4 bg-muted rounded-md text-xs overflow-x-auto">
                     {playwrightReporterCode}
@@ -545,12 +549,11 @@ export default TestManagementReporter;`;
                 <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
                   <h4 className="font-medium text-blue-900 mb-2">Instructions</h4>
                   <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
-                    <li>Copy the custom reporter code above</li>
-                    <li>Create a file named <code>custom-reporter.ts</code> in your Playwright project</li>
-                    <li>Replace <code>YOUR_APP_URL</code> with your app URL</li>
-                    <li>Replace <code>YOUR_PROJECT_ID</code> with the project ID shown above</li>
+                    <li>Create an API token above and store it as a CI secret named <code>QUALITYLOOM_TOKEN</code></li>
+                    <li>Save the reporter code above as <code>qualityloom-reporter.ts</code> in your Playwright project</li>
                     <li>Add the reporter to your <code>playwright.config.ts</code></li>
-                    <li>Run your tests - results will be automatically uploaded!</li>
+                    <li>Optionally set <code>QUALITYLOOM_URL</code> if your tests run against a different QualityLoom address</li>
+                    <li>Run your tests: each run appears under Test Runs; tests are matched to cases by <code>TC-&lt;n&gt;</code> in the title, then by exact title</li>
                   </ol>
                 </div>
               </CardContent>

@@ -51,7 +51,7 @@ Nothing else is required: no file storage (S3), no email service, no identity pr
 | Logs / metrics | Plain text on stdout/stderr; no access log, no metrics endpoint ([Logging and Monitoring](#logging-and-monitoring)) |
 
 **Known limitations to plan around** (details in [Security Notes](#security-notes)):
-- `POST /api/playwright/report` is unauthenticated. Restrict network access to it (CI networks, VPN).
+- `POST /api/playwright/report` requires a per-project API token (`Authorization: Bearer qlt_...`), created by users in the project's Settings > Playwright Reporter; tokens are stored hashed and can be revoked there.
 - Sessions are not revoked on logout or password change; only rotating `JWT_SECRET` revokes them (for everyone).
 - No per-project permissions; every signed-in user can access every project.
 - The login rate limiter is in memory per instance.
@@ -311,7 +311,7 @@ QualityLoom has local accounts only (email or username + password at `/login`). 
 
 - Set `INITIAL_ADMIN_PASSWORD` before the first start of any non-local deployment; otherwise whoever reaches the URL first can sign in as `admin` / `admin`.
 - Keep `JWT_SECRET` in a secret manager; it signs all sessions.
-- `POST /api/playwright/report` is unauthenticated: anyone who can reach the server can create runs and test cases in any project. Restrict network access to it (allow only CI networks/VPN) until API tokens exist.
+- `POST /api/playwright/report` accepts only valid project API tokens (401 otherwise; 403 for another project's data). Tokens do not expire: store them in the CI secret store and revoke unused ones in Settings. The endpoint has no rate limit of its own; apply one at the proxy if needed.
 - Sessions are not revoked on password change.
 - No per-project permissions.
 - The login rate limiter is per instance (see [Scaling](#scaling)).
@@ -469,7 +469,7 @@ Startup errors visible in the logs:
 
 **Branding does not change:** `VITE_APP_TITLE`/`VITE_APP_LOGO` are build args; rebuild the image with `--build-arg`.
 
-**Playwright results not arriving:** check that the CI runner can reach the app URL (internal-only hosting is not reachable from GitHub-hosted runners) and that the reporter uses the right project ID (Settings > Playwright Reporter).
+**Playwright results not arriving:** check that the CI runner can reach the app URL (internal-only hosting is not reachable from GitHub-hosted runners) and check the reporter's log line: `401` means `QUALITYLOOM_TOKEN` is missing, wrong or revoked (create a new one in Settings > Playwright Reporter); `403` means the token belongs to another project or the project was deleted.
 
 ---
 

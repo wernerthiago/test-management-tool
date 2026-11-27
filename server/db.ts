@@ -24,6 +24,8 @@ import {
   InsertTestExecution,
   testCaseAuditLog,
   InsertTestCaseAuditLog,
+  apiTokens,
+  InsertApiToken,
 } from "../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -95,6 +97,8 @@ export async function deleteProject(id: string) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(projects).where(eq(projects.id, id));
+  // A deleted project's reporter tokens must stop working
+  await db.delete(apiTokens).where(eq(apiTokens.projectId, id));
 }
 
 // ===== Folders =====
@@ -451,4 +455,49 @@ export async function deleteUser(userId: string): Promise<void> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await db.delete(users).where(eq(users.id, userId));
+}
+
+// ==================== API tokens (Playwright reporter) ====================
+
+export async function createApiToken(token: InsertApiToken) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(apiTokens).values(token);
+}
+
+export async function getApiTokensByProject(projectId: string) {
+  const db = await getDb();
+  if (!db) return [];
+  return await db
+    .select({
+      id: apiTokens.id,
+      name: apiTokens.name,
+      tokenPrefix: apiTokens.tokenPrefix,
+      createdBy: apiTokens.createdBy,
+      createdAt: apiTokens.createdAt,
+      lastUsedAt: apiTokens.lastUsedAt,
+    })
+    .from(apiTokens)
+    .where(eq(apiTokens.projectId, projectId))
+    .orderBy(desc(apiTokens.createdAt));
+}
+
+export async function getApiTokenByHash(tokenHash: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const [token] = await db.select().from(apiTokens).where(eq(apiTokens.tokenHash, tokenHash)).limit(1);
+  return token || null;
+}
+
+export async function touchApiToken(id: string) {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(apiTokens).set({ lastUsedAt: new Date() }).where(eq(apiTokens.id, id));
+}
+
+/** Revokes a token; scoped by project so a token id from another project cannot be deleted by mistake. */
+export async function deleteApiToken(id: string, projectId: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.delete(apiTokens).where(and(eq(apiTokens.id, id), eq(apiTokens.projectId, projectId)));
 }

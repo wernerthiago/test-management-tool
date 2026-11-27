@@ -18,7 +18,8 @@ This document provides a complete overview of the e2e test coverage for QualityL
 | Test Runs | 43 (5 skipped) | ✅ Passing | ~95% | `testruns.spec.ts` |
 | Authentication | 7 | ✅ Passing | Login, first-login password change, sign out | `auth.spec.ts` |
 | Admin Panel | 9 | ✅ Passing | Users, roles, temporary passwords | `admin.spec.ts` |
-| **Total** | **89** (83 run, 6 skipped) | ✅ | - | - |
+| Reporter API tokens | 6 | ✅ Passing | Token auth on `/api/playwright/report`, create/revoke in Settings | `reporter.spec.ts` |
+| **Total** | **95** (89 run, 6 skipped) | ✅ | - | - |
 
 ---
 
@@ -59,6 +60,23 @@ Each test creates its own user directly in the database (`utils.createTestUser`)
 | should not let admins delete or demote themselves | Delete button and role select are disabled on the admin's own row |
 
 **Not covered by E2E**: the server-side guard that keeps at least one admin. The UI blocks self-deletion/demotion, so it is only reachable through the API or two admins acting at the same time.
+
+---
+
+# Playwright Reporter API Tokens - Test Coverage
+
+**Test File**: `tests/e2e/reporter.spec.ts` · **Page Object**: `ReporterSettingsPage.ts`
+
+`beforeEach` creates a user and project and signs in; `afterEach` deletes the project with its runs, cases and tokens (`utils.deleteProjectData`). API calls go straight to `POST /api/playwright/report` through `page.request`.
+
+| Test | Behavior verified |
+|------|-------------------|
+| should reject a report without a token | `401`, no run created |
+| should reject a report with an unknown token | `401` |
+| should accept a report with a valid token and create the run in its project | `200` with `executionCount`, run and executions stored in the token's project |
+| should reject a token used for a different project | `403` when the body's `projectId` is another project; nothing stored there |
+| should create a token that is shown once and works for reporting | Token shown once in the dialog, only its prefix in the table, and it authenticates a report |
+| should reject reports once the token is revoked | Revoked token disappears from the table and is rejected with `401` |
 
 ---
 
