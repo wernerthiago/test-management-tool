@@ -89,7 +89,7 @@ A modern, full-stack test management platform built with React, TypeScript, Node
 - **Password login** (bcrypt) with JWT session cookies
 
 ### Database
-- **MySQL 8.0+** (production-ready relational database)
+- **MySQL 8.0 or 8.4** (both tested in CI)
 - Drizzle ORM for migrations and queries
 
 ### PDF Generation
@@ -107,7 +107,7 @@ A modern, full-stack test management platform built with React, TypeScript, Node
 
 - **Node.js** 22.x or higher
 - **pnpm** package manager
-- **MySQL** 8.0 or higher (or Docker, to run it with `docker-compose up -d db`)
+- **MySQL** 8.0 or 8.4 (or Docker, to run it with `docker-compose up -d db`)
 
 ### Installation
 
@@ -143,7 +143,7 @@ A modern, full-stack test management platform built with React, TypeScript, Node
 
 6. **Log in:**
    - Open http://localhost:3000
-   - On first start the app creates an admin account: username `admin`, password `admin`
+   - On first start the app creates an admin account: username `admin`, password `admin` (or the value of `INITIAL_ADMIN_PASSWORD` in `.env`)
    - You will be asked to choose a new password (at least 8 characters, with uppercase, lowercase, a number and a special character)
 
 For detailed local setup instructions, see **[LOCAL_SETUP.md](LOCAL_SETUP.md)**.
@@ -376,31 +376,26 @@ The built files will be in the `dist` directory.
 pnpm start
 ```
 
-## 🚀 Deployment
+## 🚀 Self-hosting at a glance
 
-For production deployment, see the comprehensive **[Deployment Guide](docs/DEPLOYMENT_GUIDE.md)** which covers:
+- **What runs:** one stateless app container (port 3000, built from the `Dockerfile`; there is no published image) plus a MySQL database. MySQL 8.0 and 8.4 are supported and tested. No other services (no S3, email, identity provider or cache).
+- **Health:** `GET /health` (liveness, does not touch the DB) and `GET /health/ready` (readiness, `SELECT 1` against MySQL; 503 when the DB is unreachable).
+- **Required config:** `DATABASE_URL` (`mysql://user:pass@host:3306/db`), `JWT_SECRET` (≥ 32 chars, stable across deploys) and `TRUST_PROXY` (number of proxy hops, usually `1`). `INITIAL_ADMIN_PASSWORD` is recommended for any non-local deployment.
+- **Startup:** each instance applies pending migrations and creates the `admin` account if none exists, serialized by a MySQL lock, so multiple replicas are safe. Without `INITIAL_ADMIN_PASSWORD` the password is `admin`: set it, or sign in and change it before exposing the URL.
+- **Branding** (`VITE_APP_TITLE`, `VITE_APP_LOGO`) is compiled in at build time (`docker build --build-arg ...`); setting it at runtime has no effect.
+- **Know up front:**
+  - Migrations are forward-only and some are destructive; rollback means restoring the pre-upgrade database backup and running the previous image.
+  - The Playwright reporter endpoint `POST /api/playwright/report` is unauthenticated; restrict network access to it.
+  - The login rate limiter is in memory per instance (effective limit up to N × 10 with N replicas).
+- `docker-compose.yml` is for local development and evaluation only.
 
-- Infrastructure requirements
-- Hosting options (Cloud platforms, VPS, On-premises)
-- Database setup (Managed and self-hosted)
-- Domain and SSL configuration
-- Authentication and user management
-- Security best practices
-- Cost estimation
-- Monitoring and maintenance
-
-**Quick Deployment Options:**
-
-- **Docker**: production image from the `Dockerfile` (`docker-compose up -d` runs app + MySQL)
-- **Cloud Platforms**: Railway, Render (easiest)
-- **VPS**: DigitalOcean, AWS EC2, Linode (more control)
-- **On-Premises**: Your own infrastructure (complete control)
+Full operator guide (configuration, scaling, health checks, upgrades, backups, reverse proxy, Kubernetes example): **[Hosting QualityLoom internally — what DevOps needs](docs/DEPLOYMENT_GUIDE.md#hosting-qualityloom-internally--what-devops-needs)**.
 
 ## 🔒 Security
 
 - Password login with bcrypt hashing; sessions are signed JWTs in an httpOnly cookie
 - Default `admin`/`admin` account must change its password at first login
-- Login rate limiting (10 failed attempts per IP per 15 minutes)
+- Login rate limiting (10 failed attempts per IP per 15 minutes, per app instance)
 - SQL injection prevention (Drizzle ORM)
 - Input validation with Zod
 

@@ -35,12 +35,14 @@ These are known and documented; please do not report them as new vulnerabilities
 - **The Playwright reporter endpoint (`POST /api/playwright/report`) is not authenticated.** Anyone who can reach the server can create test runs and test cases in any project. Restrict network access to it (internal network, VPN or reverse-proxy rules) until API tokens are added.
 - **Sessions are not revoked when a password changes.** A session cookie stays valid for one year or until `JWT_SECRET` is rotated (which signs everyone out).
 - **No per-project permissions.** Every signed-in user can see and change every project; only the admin panel is restricted to admins.
+- **The login rate limiter is per instance and in memory.** It allows 10 failed attempts per client IP per 15 minutes on each instance, so with N replicas the effective limit is up to N × 10, and it resets when an instance restarts.
 
 ## Securing a Deployment
 
-- Sign in as `admin` / `admin` right after the first start and choose a strong password (QualityLoom forces this at first login).
+- Set `INITIAL_ADMIN_PASSWORD` (at least 8 characters) before the first start of any non-local deployment. Without it the `admin` account is created with password `admin`, and whoever reaches the URL first can sign in with it. Either way the account must change its password at first login.
 - Set `JWT_SECRET` to a long random value (`openssl rand -hex 32`) and keep it in a secret manager. The production app refuses the placeholder from `.env.example`.
-- Serve QualityLoom over HTTPS behind a reverse proxy and set `TRUST_PROXY=1`, so login rate limiting sees real client IPs.
+- Serve QualityLoom over HTTPS behind a reverse proxy and set `TRUST_PROXY` to the number of proxy hops (usually `1`), so login rate limiting sees real client IPs.
+- Add security headers (HSTS, `Content-Security-Policy`, `X-Frame-Options`) at the reverse proxy; the app sets none itself.
 - Use a dedicated MySQL user with access to the QualityLoom database only, and back the database up.
 - Keep dependencies updated: `pnpm audit` lists known vulnerabilities.
 

@@ -1,25 +1,28 @@
 # QualityLoom - Deployment Guide
 
-This comprehensive guide covers all the infrastructure requirements, hosting options, and step-by-step instructions for deploying QualityLoom to make it accessible to your organization's users.
+Operator guide for hosting QualityLoom: what runs, how to configure it, and how it behaves at startup, under scaling, during upgrades and on shutdown.
 
 ---
 
 ## Table of Contents
 
 1. [Hosting QualityLoom internally — what DevOps needs](#hosting-qualityloom-internally--what-devops-needs)
-2. [System Architecture Overview](#system-architecture-overview)
-3. [Infrastructure Requirements](#infrastructure-requirements)
-4. [Hosting Options](#hosting-options)
-5. [Database Setup](#database-setup)
-6. [Application Deployment](#application-deployment)
-7. [Domain and SSL Configuration](#domain-and-ssl-configuration)
-8. [Authentication Setup](#authentication-setup)
-9. [Environment Variables](#environment-variables)
-10. [Monitoring and Maintenance](#monitoring-and-maintenance)
-11. [Cost Estimation](#cost-estimation)
-12. [Security Considerations](#security-considerations)
-13. [Deployment Checklist](#deployment-checklist)
-14. [Troubleshooting](#troubleshooting)
+2. [Image](#image)
+3. [Configuration](#configuration)
+4. [Startup and Migrations](#startup-and-migrations)
+5. [Scaling](#scaling)
+6. [Health Checks](#health-checks)
+7. [Shutdown](#shutdown)
+8. [Upgrades and Rollback](#upgrades-and-rollback)
+9. [Database](#database)
+10. [Reverse Proxy and TLS](#reverse-proxy-and-tls)
+11. [Logging and Monitoring](#logging-and-monitoring)
+12. [Authentication and Users](#authentication-and-users)
+13. [Security Notes](#security-notes)
+14. [Kubernetes Example](#kubernetes-example)
+15. [Other Ways to Run It](#other-ways-to-run-it)
+16. [Deployment Checklist](#deployment-checklist)
+17. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -27,948 +30,447 @@ This comprehensive guide covers all the infrastructure requirements, hosting opt
 
 QualityLoom is two pieces:
 
-1. **The app container**, built from the `Dockerfile` in the repository root. It is stateless: no files are stored on disk, so it can be replaced or restarted at any time.
-2. **A MySQL 8 database.** Use a managed MySQL service (RDS, Cloud SQL, Azure Database for MySQL, etc.) or a MySQL server with backups. All data lives here.
+1. **The app container**, built from the `Dockerfile` in the repository root (see [Image](#image); there is no published image). It is stateless: it stores nothing on disk and sessions are signed cookies, so any instance can be restarted or replaced, and several replicas can run side by side without sticky sessions (see [Scaling](#scaling)).
+2. **A MySQL database.** MySQL 8.0 and 8.4 are supported and tested (CI runs the full E2E suite on both). Use a managed service (RDS, Cloud SQL, Azure Database for MySQL, etc.) or a MySQL server you back up. All data lives here.
 
-Nothing else is required: no file storage (S3), no email service, no external identity provider.
+Nothing else is required: no file storage (S3), no email service, no identity provider, no cache.
 
-**Configuration** (environment variables, see [Environment Variables](#environment-variables)):
+**Summary for the platform team:**
+
+| Topic | Behaviour |
+|---|---|
+| Port | 3000 (keep it; the image `HEALTHCHECK` uses 3000) |
+| Required env | `DATABASE_URL`, `JWT_SECRET`; `TRUST_PROXY` behind a proxy; `INITIAL_ADMIN_PASSWORD` recommended ([Configuration](#configuration)) |
+| Startup | Migrates the database and creates the `admin` account itself, under a MySQL lock; the port opens only afterwards ([Startup and Migrations](#startup-and-migrations)) |
+| Replicas | Supported; login rate limiter is per instance ([Scaling](#scaling)) |
+| Probes | Liveness `GET /health`, readiness `GET /health/ready` ([Health Checks](#health-checks)) |
+| Shutdown | Graceful on SIGTERM, up to 10 s ([Shutdown](#shutdown)) |
+| Upgrades | Forward-only migrations, some destructive; rollback = restore the database backup ([Upgrades and Rollback](#upgrades-and-rollback)) |
+| State / backups | MySQL only ([Database](#database)) |
+| Proxy | Terminate TLS, forward `X-Forwarded-For`/`X-Forwarded-Proto`, allow 50 MB bodies, add security headers ([Reverse Proxy and TLS](#reverse-proxy-and-tls)) |
+| Logs / metrics | Plain text on stdout/stderr; no access log, no metrics endpoint ([Logging and Monitoring](#logging-and-monitoring)) |
+
+**Known limitations to plan around** (details in [Security Notes](#security-notes)):
+- `POST /api/playwright/report` is unauthenticated. Restrict network access to it (CI networks, VPN).
+- Sessions are not revoked on logout or password change; only rotating `JWT_SECRET` revokes them (for everyone).
+- No per-project permissions; every signed-in user can access every project.
+- The login rate limiter is in memory per instance.
+
+**Networking:** CI pipelines that send Playwright results must reach the URL. If QualityLoom is only reachable inside the company network, GitHub-hosted runners cannot reach it; use self-hosted runners inside the network, or expose that endpoint deliberately.
+
+---
+
+## Image
+
+There is no published image; build it from the repository:
+
+```bash
+docker build -t qualityloom:$(git rev-parse --short HEAD) .
+```
+
+Tag by git SHA; the repository has no release tags yet.
+
+The image is Node 22 Alpine. It contains the build output, production dependencies and the `drizzle/` migrations, sets `NODE_ENV=production` and `WORKDIR /app`, runs `node dist/index.js` as the non-root user `node`, exposes port 3000 and has a Docker `HEALTHCHECK` on `GET /health` at port 3000.
+
+**Branding is build-time only.** `VITE_APP_TITLE` and `VITE_APP_LOGO` are compiled into the client bundle:
+
+```bash
+docker build --build-arg VITE_APP_TITLE="Acme QA" --build-arg VITE_APP_LOGO=/logo.png -t qualityloom:<git-sha> .
+```
+
+Setting them with `docker run -e` or in a Kubernetes manifest has no effect. `docker-compose.yml` passes them as build args from the environment; `pnpm dev`/`pnpm build` read them from `.env`.
+
+---
+
+## Configuration
+
+Runtime environment variables:
 
 | Variable | Required | Value |
 |---|---|---|
-| `DATABASE_URL` | yes | `mysql://user:password@host:3306/database` |
-| `JWT_SECRET` | yes | Random string, at least 32 characters. The app refuses to start otherwise. Changing it signs everyone out. |
-| `TRUST_PROXY` | behind a proxy | `1` when one reverse proxy / load balancer / ingress sits in front of the app |
-| `PORT` | no | Default `3000` |
-| `NODE_ENV` | no | Already `production` in the image |
-| `VITE_APP_TITLE`, `VITE_APP_LOGO` | no | Branding |
+| `DATABASE_URL` | yes | `mysql://user:password@host:3306/database`. URL-encode special characters in the password (`@` → `%40`). Options below. |
+| `JWT_SECRET` | yes | Random string, at least 32 characters (`openssl rand -hex 32`). Keep it stable across deploys; rotating it signs everyone out. In production the app refuses to start with the `.env.example` placeholder (any value starting with `your-super-secret`). |
+| `TRUST_PROXY` | behind a proxy | Number of reverse-proxy hops in front of the app. `1` behind a single ingress, load balancer or nginx; `2` for e.g. CDN + ingress. Default `0`. |
+| `INITIAL_ADMIN_PASSWORD` | recommended | Password for the `admin` account created on first start; at least 8 characters (the app refuses to start if shorter). Default `admin`. |
+| `PORT` | no | Default `3000`. The app exits if the port is busy. Keep 3000 in the container (the image `HEALTHCHECK` uses it). |
+| `NODE_ENV` | no | The image sets `production`. |
 
-**Networking:**
-- Put the app behind the company's HTTPS reverse proxy, ingress or load balancer, with an internal DNS name (e.g. `qualityloom.internal.example.com`).
-- Set `TRUST_PROXY=1` so login rate limiting sees real client IPs instead of the proxy's.
-- Serve it over HTTPS: the session cookie is marked `Secure` when the request arrives over HTTPS (directly, or as reported by the proxy's `X-Forwarded-Proto` header).
-- Health check: `GET /health` (returns 200). The image also has a Docker `HEALTHCHECK` on it.
-- CI pipelines that send Playwright results (`POST /api/playwright/report`) must be able to reach the URL over the network. If QualityLoom is only reachable inside the company network, GitHub-hosted runners cannot reach it; use self-hosted runners inside the network or expose that endpoint deliberately.
+No other runtime variables are used. `VITE_APP_TITLE`/`VITE_APP_LOGO` are build args (see [Image](#image)).
 
-**Database migrations** run automatically when the app starts. Upgrading means deploying the new image and restarting; nobody runs migrations by hand.
+**`DATABASE_URL` options.** mysql2 options go in the query string; each value is parsed as JSON:
 
-**First login:** on an empty database the app creates the account `admin` / `admin`. Log in with it right after the first deployment and choose a new password (the app forces this). Then create the other users from the admin panel (`/admin`).
+- TLS: `?ssl={"rejectUnauthorized":true}`. URL-encode the JSON in shells and YAML:
+  `mysql://user:pass@host:3306/qualityloom?ssl=%7B%22rejectUnauthorized%22%3Atrue%7D`
+- Pool size: `connectionLimit=20`. Default is 10 connections per instance.
 
-**Backups:** back up the MySQL database (see [Database Maintenance](#database-maintenance)). The app container holds no data.
+Combine with `&`, e.g. `...?ssl=%7B%22rejectUnauthorized%22%3Atrue%7D&connectionLimit=20`.
 
----
+**`TRUST_PROXY`** matters for two things: the login rate limiter keys on the real client IP (otherwise every user shares the proxy's IP), and the session cookie is marked `Secure` when the proxy reports HTTPS via `X-Forwarded-Proto`.
 
-## System Architecture Overview
-
-The QualityLoom is built with a modern full-stack architecture:
-
-**Frontend:**
-- React 19 with TypeScript
-- Vite for build tooling
-- TailwindCSS for styling
-- Responsive design for desktop and mobile
-
-**Backend:**
-- Node.js with Express
-- tRPC for type-safe API
-- Password login; sessions are signed JWTs in an httpOnly cookie
-- RESTful endpoints for Playwright Reporter
-- Applies database migrations automatically at startup
-
-**Database:**
-- MySQL 8.0+ (primary database)
-- Drizzle ORM for database operations
-- Supports connection pooling
-- The only place where data is stored; the app itself is stateless
+**`INITIAL_ADMIN_PASSWORD`** should be set for any non-local deployment: without it, whoever reaches the URL first can sign in as `admin` / `admin`. The account must change its password at first login either way. It only takes effect when no admin exists.
 
 ---
 
-## Infrastructure Requirements
+## Startup and Migrations
 
-### Minimum Requirements
+On start each instance:
 
-**Application Server:**
-- **CPU**: 2 vCPUs
-- **RAM**: 2 GB
-- **Storage**: 20 GB SSD
-- **OS**: Ubuntu 22.04 LTS or similar Linux distribution
-- **Docker**, or **Node.js** v22.x and **pnpm** v10.x when running without containers
+1. Validates the environment (exits on missing/invalid values).
+2. Connects to MySQL.
+3. Takes the MySQL named lock `qualityloom_startup` (`GET_LOCK`, waits up to 300 s).
+4. Applies pending migrations from `./drizzle` (relative to the working directory; `/app` in the image).
+5. Creates the `admin` account if no admin exists.
+6. Releases the lock.
+7. Starts the HTTP server.
 
-**Database Server:**
-- **MySQL**: 8.0 or higher
-- **CPU**: 2 vCPUs
-- **RAM**: 2 GB
-- **Storage**: 50 GB SSD (scales with test case data)
+The port opens only after this completes, so probes fail until then (see [Health Checks](#health-checks)). Nobody runs migrations by hand.
 
-**Network:**
-- HTTPS support (SSL/TLS certificate) at the reverse proxy
-- Firewall configured for ports 80, 443
-- Reachable from the CI runners that report Playwright results
+Verified: two instances started at the same moment on an empty database both became ready; one migrated and seeded, the other waited and then found nothing to do; exactly one admin was created.
 
-### Recommended Requirements (for 50+ users)
-
-**Application Server:**
-- **CPU**: 4 vCPUs
-- **RAM**: 4 GB
-- **Storage**: 40 GB SSD
-
-**Database Server:**
-- **CPU**: 4 vCPUs
-- **RAM**: 4 GB
-- **Storage**: 100 GB SSD with automatic backups
+If another instance holds the lock for more than 300 s, startup fails with `Timed out after 300s waiting for another instance to finish migrating`.
 
 ---
 
-## Hosting Options
+## Scaling
 
-### Option 1: Cloud Platform as a Service (Recommended)
+Multiple replicas are supported:
 
-**Platforms:**
-- **Railway** (Full-stack deployment)
-- **Render** (Full-stack deployment)
-- **Fly.io** (Full-stack deployment)
+- Sessions are stateless signed cookies; no sticky sessions needed.
+- Startup migrations and admin seeding are serialized by the MySQL lock.
+- **Rate limiter caveat:** the login rate limiter (10 failed attempts per client IP per 15 minutes) is in memory per instance. With N replicas the effective limit is up to N × 10, and it resets on restart.
+- **Connections:** each instance opens up to `connectionLimit` connections (default 10). Plan MySQL `max_connections` ≥ replicas × `connectionLimit` + a few (for the startup lock connection and admin access). During a rolling update old and new pods overlap; count them too.
 
-**Pros:**
-- Automatic SSL certificates
-- Easy deployment from GitHub
-- Built-in monitoring and logging
-- Automatic scaling
-- Zero-downtime deployments
-
-**Cons:**
-- Monthly recurring costs
-- Less control over infrastructure
-
-**Recommended Setup:**
-- Deploy application on Railway/Render
-- Use managed MySQL database (AWS RDS or provider's database)
-
-### Option 2: Virtual Private Server (VPS)
-
-**Providers:**
-- **DigitalOcean** (Droplets)
-- **Linode** (Compute Instances)
-- **Vultr**
-- **AWS EC2**
-- **Google Cloud Compute Engine**
-
-**Pros:**
-- Full control over infrastructure
-- Potentially lower costs for high usage
-- Can host multiple services
-
-**Cons:**
-- Requires server management knowledge
-- Manual SSL certificate setup
-- Responsible for security updates
-- Manual scaling
-
-**Recommended Setup:**
-- Single VPS instance with Docker
-- MySQL on same server or managed database
-- Nginx as reverse proxy
-- Let's Encrypt for SSL
-
-### Option 3: On-Premises Deployment
-
-**Requirements:**
-- Physical or virtual server in your data center
-- Network infrastructure (internal DNS; a public IP only if users or CI runners outside the network need access)
-- IT team for maintenance
-
-**Pros:**
-- Complete data control
-- No recurring cloud costs
-- Meets strict compliance requirements
-
-**Cons:**
-- Highest initial setup cost
-- Requires dedicated IT resources
-- Responsible for all maintenance and security
+Resource usage has not been measured. Start with requests of about 256Mi memory / 100m CPU and tune from observed usage.
 
 ---
 
-## Database Setup
+## Health Checks
 
-### Option A: Managed Database (Recommended)
+| Endpoint | Purpose | Behaviour |
+|---|---|---|
+| `GET /health` | Liveness | Process is up. Does not touch the database. Returns 200 with `{status, timestamp, environment: {nodeEnv, hasDatabase, hasJwtSecret}}`. |
+| `GET /health/ready` | Readiness | Runs `SELECT 1` with a 2 s timeout. 200 `{"status":"ready","database":true}` or 503 `{"status":"unavailable","database":false}`. |
 
-**Providers:**
-- **AWS RDS for MySQL**
-- **Google Cloud SQL for MySQL**
-- **Azure Database for MySQL**
-- **DigitalOcean Managed Databases**
+Verified: with the database paused, `/health/ready` answered 503 in 2.0 s while `/health` stayed 200.
 
-**Setup Steps:**
+Use a startup probe generous enough for migrations plus the lock wait (up to 300 s), since the port does not open until startup completes. Do not use `/health/ready` for liveness: a database outage would restart every pod without fixing anything.
 
-1. **Create Database Instance**
-   - Choose MySQL 8.0+
-   - Select appropriate tier (2 GB RAM minimum)
-   - Enable automatic backups
-   - Configure in same region as application server
+---
 
-2. **Configure Database**
-   ```sql
-   CREATE DATABASE test_management_tool CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-   ```
+## Shutdown
 
-3. **Create Database User**
-   ```sql
-   CREATE USER 'tmt_user'@'%' IDENTIFIED BY 'strong_password_here';
-   GRANT ALL PRIVILEGES ON test_management_tool.* TO 'tmt_user'@'%';
-   FLUSH PRIVILEGES;
-   ```
+On SIGTERM or SIGINT the server stops accepting connections, lets in-flight requests finish for up to 10 s, closes the database pool and exits 0. Verified: `docker stop` takes about 1 s.
 
-4. **Get Connection String**
-   ```
-   mysql://tmt_user:strong_password_here@host:3306/test_management_tool
-   ```
+In Kubernetes set `terminationGracePeriodSeconds` ≥ 15.
 
-5. **Enable SSL Connection** (if supported)
-   - Download SSL certificates from provider
-   - Configure connection to use SSL
+---
 
-The app creates all tables itself on first start (migrations run automatically), so an empty database is all it needs. The user must be allowed to create and alter tables in that database.
+## Upgrades and Rollback
 
-### Option B: Self-Hosted MySQL
+Migrations are forward-only and some are destructive (they drop tables or columns). There are no down migrations.
 
-**Installation on Ubuntu:**
+**Upgrade:**
+1. Back up the database (see [Backups](#backups)).
+2. Build and deploy the new image. It migrates on start.
 
-```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
+**Rollback:** restore the pre-upgrade backup, then run the previous image. Running the previous image against the migrated schema is not supported.
 
-# Install MySQL
-sudo apt install mysql-server -y
+**Rollout strategy:**
+- Releases that add migrations (new files in `drizzle/`): prefer a recreate-style rollout (stop old instances, then start new ones), because old instances may break on the new schema.
+- Releases without new migrations: a normal rolling update is fine.
 
-# Secure MySQL installation
-sudo mysql_secure_installation
+Check with `git diff --name-only <deployed-sha> <new-sha> -- drizzle/`.
 
-# Create database and user
-sudo mysql -u root -p
-```
+---
+
+## Database
+
+### Versions
+
+MySQL 8.0 and 8.4 are supported and tested.
+
+### Setup
+
+Create an empty database and a dedicated user; the app creates all tables itself.
 
 ```sql
-CREATE DATABASE test_management_tool CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'tmt_user'@'localhost' IDENTIFIED BY 'strong_password_here';
-GRANT ALL PRIVILEGES ON test_management_tool.* TO 'tmt_user'@'localhost';
-FLUSH PRIVILEGES;
-EXIT;
+CREATE DATABASE qualityloom CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'qualityloom'@'%' IDENTIFIED BY '<strong password>';
+GRANT SELECT, INSERT, UPDATE, DELETE,
+      CREATE, ALTER, DROP, INDEX, REFERENCES
+  ON qualityloom.* TO 'qualityloom'@'%';
 ```
 
-**Configure MySQL for Production:**
+Restrict the host part (`'%'`) to the app's network where possible.
 
-Edit `/etc/mysql/mysql.conf.d/mysqld.cnf`:
+### Permissions
+
+The same `DATABASE_URL` user runs the app and the migrations, so it needs:
+
+- Runtime: `SELECT`, `INSERT`, `UPDATE`, `DELETE`
+- Migrations: `CREATE`, `ALTER`, `DROP`, `INDEX`, `REFERENCES`
+
+on the QualityLoom database only. `GET_LOCK` needs no extra privilege. Separate migration credentials are not supported today.
+
+### Backups
+
+The database is the only state; backing it up is the whole backup. With a managed service, enable automated backups and point-in-time recovery. For a self-managed server, use `mysqldump` with credentials from an option file, not on the command line:
 
 ```ini
-[mysqld]
-max_connections = 200
-innodb_buffer_pool_size = 1G
-innodb_log_file_size = 256M
-character-set-server = utf8mb4
-collation-server = utf8mb4_unicode_ci
+# /etc/qualityloom/backup.cnf  (chmod 600, readable only by the user running the backup)
+[client]
+host=db-host
+user=<backup user>
+password=<password>
 ```
 
-Restart MySQL:
 ```bash
-sudo systemctl restart mysql
+#!/bin/bash
+set -euo pipefail
+BACKUP_DIR=/var/backups/qualityloom
+mkdir -p "$BACKUP_DIR"
+mysqldump --defaults-extra-file=/etc/qualityloom/backup.cnf \
+  --single-transaction --routines --triggers \
+  qualityloom | gzip > "$BACKUP_DIR/qualityloom_$(date +%Y%m%d_%H%M%S).sql.gz"
+find "$BACKUP_DIR" -name 'qualityloom_*.sql.gz' -mtime +30 -delete
 ```
+
+`--defaults-extra-file` must be the first option. Restore:
+
+```bash
+gunzip < qualityloom_20261101_020000.sql.gz | mysql --defaults-extra-file=/etc/qualityloom/backup.cnf qualityloom
+```
+
+Test restores regularly, and always take a backup before an upgrade.
 
 ---
 
-## Application Deployment
+## Reverse Proxy and TLS
 
-### Deployment with Docker
+- Terminate HTTPS at the proxy or ingress.
+- Forward `X-Forwarded-For` and `X-Forwarded-Proto`, and set `TRUST_PROXY` to the number of hops (see [Configuration](#configuration)).
+- Allow request bodies up to 50 MB: Playwright report uploads can be large, and nginx's default of 1 MB causes `413` errors.
+- Add security headers at the proxy. The app sets none (no HSTS, CSP or `X-Frame-Options`).
 
-The `Dockerfile` builds a production image (Node 22 Alpine, pnpm 10 via Corepack). It contains only the build output, production dependencies and the `drizzle/` migrations, runs `node dist/index.js` with `NODE_ENV=production` as the non-root user `node`, exposes port 3000 and has a `HEALTHCHECK` on `GET /health`.
-
-**Build and run the image:**
-
-```bash
-docker build -t qualityloom .
-
-docker run -d --name qualityloom -p 3000:3000 \
-  -e DATABASE_URL=mysql://tmt_user:strong_password_here@db-host:3306/test_management_tool \
-  -e JWT_SECRET=$(openssl rand -hex 32) \
-  -e TRUST_PROXY=1 \
-  qualityloom
-```
-
-Generate `JWT_SECRET` once and store it in your secret manager; do not generate a new one on every deploy, or everyone is signed out. Keep the container on port 3000 (the image's health check calls that port) and map it to another host port with `-p` if needed.
-
-On start the container applies pending migrations, creates `admin` / `admin` if the database has no admin, and starts serving. It has been verified to start on an empty database and to restart cleanly.
-
-**Upgrade:** build or pull the new image and replace the container. Migrations for the new version run at startup.
-
-**Or run app and database together with Docker Compose:**
-
-```bash
-docker-compose up -d
-```
-
-`docker-compose.yml` defines two services: `db` (MySQL 8.0, data in the `db_data` volume) and `app` (built from the `Dockerfile`, port 3000). Compose refuses to start until `JWT_SECRET` is set (in `.env` or the environment), and the production app refuses the placeholder from `.env.example`. Set `JWT_SECRET` (and optionally `DB_PASSWORD`, `DB_ROOT_PASSWORD`, `TRUST_PROXY`, `APP_PORT`) in the environment or a `.env` file before starting; the defaults are for local use only.
-
-### Deployment on Cloud Platform (Railway Example)
-
-1. **Prepare Repository**
-   ```bash
-   # Ensure code is pushed to GitHub
-   git push origin main
-   ```
-
-2. **Create Railway Project**
-   - Go to https://railway.app
-   - Click "New Project" → "Deploy from GitHub repo"
-   - Select your test-management-tool repository
-   - Railway detects the `Dockerfile` and builds the image
-
-3. **Add Database**
-   - Click "New" → "Database" → "MySQL"
-   - Railway will provision a MySQL instance
-   - Connection string will be available as `DATABASE_URL`
-
-4. **Configure Environment Variables**
-   - Go to project settings → Variables
-   - Add required variables (see [Environment Variables](#environment-variables))
-
-5. **Configure Build Settings** (only if not building from the `Dockerfile`)
-   ```json
-   {
-     "buildCommand": "pnpm install && pnpm build",
-     "startCommand": "pnpm start"
-   }
-   ```
-
-6. **Deploy**
-   - Railway will automatically deploy on every push to main
-   - Access your app at the provided Railway URL and log in with `admin` / `admin` (see [Authentication Setup](#authentication-setup))
-
-7. **Add Custom Domain** (optional)
-   - Go to Settings → Domains
-   - Add your custom domain
-   - Configure DNS as instructed
-
-### Deployment on VPS (Ubuntu)
-
-**1. Initial Server Setup**
-
-```bash
-# Connect to server
-ssh root@your-server-ip
-
-# Update system
-apt update && apt upgrade -y
-
-# Create application user
-adduser tmt
-usermod -aG sudo tmt
-su - tmt
-
-# Install Node.js 22.x
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Enable pnpm (version pinned in package.json)
-sudo corepack enable
-
-# Install PM2 for process management
-npm install -g pm2
-```
-
-**2. Clone and Setup Application**
-
-```bash
-# Clone repository
-cd /home/tmt
-git clone https://github.com/your-org/test-management-tool.git
-cd test-management-tool
-
-# Install dependencies
-pnpm install
-
-# Create .env file
-nano .env
-```
-
-Add environment variables (see [Environment Variables](#environment-variables))
-
-**3. Build Application**
-
-```bash
-# Build for production
-pnpm build
-```
-
-No migration step: the app applies database migrations when it starts.
-
-**4. Start Application with PM2**
-
-```bash
-# Start application (production mode)
-NODE_ENV=production pm2 start dist/index.js --name test-management-tool
-
-# Save PM2 configuration
-pm2 save
-
-# Setup PM2 to start on boot
-pm2 startup
-# Follow the command output instructions
-```
-
-**5. Configure Nginx as Reverse Proxy**
-
-```bash
-# Install Nginx
-sudo apt install nginx -y
-
-# Create Nginx configuration
-sudo nano /etc/nginx/sites-available/test-management-tool
-```
-
-Add configuration:
+nginx example (TLS certificate configuration omitted):
 
 ```nginx
 server {
-    listen 80;
-    server_name your-domain.com;
+    listen 443 ssl;
+    server_name qualityloom.internal.example.com;
+
+    client_max_body_size 50m;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
 
     location / {
-        proxy_pass http://localhost:3000;
+        proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
     }
 }
 ```
 
-Set `TRUST_PROXY=1` in `.env` when the app runs behind Nginx.
-
-Enable site:
-
-```bash
-sudo ln -s /etc/nginx/sites-available/test-management-tool /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
-```
-
-**6. Setup SSL with Let's Encrypt**
-
-```bash
-# Install Certbot
-sudo apt install certbot python3-certbot-nginx -y
-
-# Obtain SSL certificate
-sudo certbot --nginx -d your-domain.com
-
-# Test automatic renewal
-sudo certbot renew --dry-run
-```
-
-**7. Configure Firewall**
-
-```bash
-# Allow SSH, HTTP, and HTTPS
-sudo ufw allow OpenSSH
-sudo ufw allow 'Nginx Full'
-sudo ufw enable
-```
+With this single nginx in front, use `TRUST_PROXY=1`. For ingress-nginx, the equivalent body limit is the annotation `nginx.ingress.kubernetes.io/proxy-body-size: "50m"`.
 
 ---
 
-## Domain and SSL Configuration
+## Logging and Monitoring
 
-### Domain Setup
+- Logs are plain text on stdout/stderr: startup, migrations, admin seeding, shutdown.
+- Unexpected server errors from API calls are logged as `[tRPC] <procedure> failed: ...`.
+- There is no access log and no metrics endpoint. Use the proxy or ingress for request logs and metrics.
+- Alert on `/health/ready` failures and on container restarts.
 
-1. **Choose a Domain**
-   - For internal hosting: an internal DNS name managed by your IT team
-   - For public hosting: a domain from a registrar (Namecheap, GoDaddy, Cloudflare, etc.)
-
-2. **Configure DNS Records**
-   
-   For cloud platforms (Railway, Render):
-   ```
-   Type: CNAME
-   Name: @ (or subdomain)
-   Value: your-app.railway.app (or provider's URL)
-   TTL: Auto
-   ```
-
-   For VPS:
-   ```
-   Type: A
-   Name: @
-   Value: your-server-ip
-   TTL: Auto
-   ```
-
-3. **Wait for DNS Propagation** (can take up to 48 hours)
-
-### SSL Certificate
-
-**Cloud Platforms:**
-- Automatic SSL provided by platform
-
-**VPS with Let's Encrypt:**
-- Free SSL certificates
-- Automatic renewal
-- See VPS deployment steps above
-
----
-
-## Authentication Setup
-
-QualityLoom has its own user accounts with password login (email or username + password) at `/login`. There is no OAuth, SSO or external identity provider to configure, and no email is sent.
-
-### First Login
-
-When the database has no admin user (first start), the app creates one:
-
-- **Username**: `admin`
-- **Password**: `admin`
-
-Log in with it immediately after the first deployment. The app forces it to `/change-password` and allows nothing else until a new password is set. New passwords need at least 8 characters, an uppercase letter, a lowercase letter, a number and a special character.
-
-### Admin Panel and Users
-
-Admins manage users at `/admin`, reachable from the **Admin panel** button on the landing page and from the user menu in the sidebar. There they can:
-
-- Add a user (name, email, role, temporary password of at least 8 characters). The user must change it at first login.
-- Change a user's role
-- Reset a user's password to a new temporary one (forces a change at next login)
-- Delete a user
-
-Admins cannot delete or demote themselves, and the last admin cannot be deleted or demoted, so there is always at least one admin.
-
-There is no sign-up page and no invite links; only admins create accounts. Users change their own password from **Change password** on the landing page.
-
-### Roles
-
-| Role | Access |
-|---|---|
-| `admin` | Everything, including the admin panel |
-| `user` | Everything except the admin panel |
-
-Every signed-in user can see and open every project.
-
-### Sessions
-
-- Session cookie `app_session_id`: httpOnly, `SameSite=Lax`, `Secure` when served over HTTPS
-- Signed with `JWT_SECRET`, valid for one year. Rotating `JWT_SECRET` signs everyone out.
-- Failed logins are rate limited: 10 per IP per 15 minutes. Behind a proxy, set `TRUST_PROXY` so the limit applies per real client IP.
-
-Generate a strong `JWT_SECRET`:
-
-```bash
-openssl rand -base64 32
-```
-
----
-
-## Environment Variables
-
-### Required Variables
-
-```env
-# Database (MySQL 8)
-DATABASE_URL=mysql://user:password@host:3306/database
-
-# Signs session cookies. At least 32 characters; the app refuses to start otherwise
-JWT_SECRET=<output of: openssl rand -hex 32>
-```
-
-### Optional Variables
-
-```env
-# production for hosting (the Docker image already sets it)
-NODE_ENV=production
-
-# Port to listen on (default 3000). The app fails to start if the port is busy
-PORT=3000
-
-# Number of reverse proxies in front of the app (default 0). Set 1 behind a load balancer, ingress or Nginx
-TRUST_PROXY=1
-
-# Branding
-VITE_APP_TITLE=QualityLoom
-VITE_APP_LOGO=https://your-domain.com/logo.png
-```
-
-No other variables are used. File storage (S3/MinIO), email, OAuth and analytics settings no longer exist.
-
----
-
-## Monitoring and Maintenance
-
-### Application Monitoring
-
-**PM2 Monitoring (VPS):**
-```bash
-# View logs
-pm2 logs test-management-tool
-
-# Monitor resources
-pm2 monit
-
-# View process status
-pm2 status
-```
-
-**Health Check:**
-- `GET /health` returns 200 when the app is up. Use it for load balancer, ingress or uptime checks.
-
-**Docker:**
 ```bash
 docker logs -f qualityloom
 docker inspect --format '{{.State.Health.Status}}' qualityloom
 ```
 
-**Cloud Platform Monitoring:**
-- Use built-in dashboards
-- Set up alerts for downtime
-- Monitor resource usage
+---
 
-### Database Maintenance
+## Authentication and Users
 
-All QualityLoom data is in the MySQL database; the app container is stateless. Backing up the database is the whole backup. With a managed MySQL service, enable its automated backups and point-in-time recovery.
+QualityLoom has local accounts only (email or username + password at `/login`). There is no SSO, OAuth or external identity provider, and no email is sent.
 
-**Backup Strategy (self-hosted MySQL):**
+- **First login:** on an empty database the app creates `admin` with `INITIAL_ADMIN_PASSWORD` (or `admin` if unset). The account must change its password at first login.
+- **Admin panel `/admin`:** admins add users with temporary passwords (changed at first login), change roles, reset passwords and delete users. Admins cannot delete or demote themselves, and the last admin cannot be removed.
+- **Roles:** `admin` (everything, including `/admin`) and `user` (everything except `/admin`). Every signed-in user can see and open every project.
+- **Sessions:** cookie `app_session_id`, an HS256 JWT signed with `JWT_SECRET`, valid one year; httpOnly, `SameSite=Lax`, `Secure` over HTTPS. Not revoked on logout or password change; only rotating `JWT_SECRET` revokes sessions (for everyone). Deleting a user or changing a role takes effect immediately, because the user is re-read on every request.
+- **Offboarding:** there is no SSO, so delete the user in `/admin`.
+- New passwords need at least 8 characters, with an uppercase letter, a lowercase letter, a number and a special character.
 
-1. **Automated Daily Backups**
-   ```bash
-   # Create backup script
-   nano /home/tmt/backup-db.sh
-   ```
+---
 
-   ```bash
-   #!/bin/bash
-   DATE=$(date +%Y%m%d_%H%M%S)
-   BACKUP_DIR="/home/tmt/backups"
-   mkdir -p $BACKUP_DIR
-   
-   mysqldump -u tmt_user -p'password' test_management_tool | gzip > $BACKUP_DIR/backup_$DATE.sql.gz
-   
-   # Keep only last 30 days
-   find $BACKUP_DIR -name "backup_*.sql.gz" -mtime +30 -delete
-   ```
+## Security Notes
 
-   ```bash
-   chmod +x /home/tmt/backup-db.sh
-   
-   # Add to crontab (daily at 2 AM)
-   crontab -e
-   0 2 * * * /home/tmt/backup-db.sh
-   ```
+- Set `INITIAL_ADMIN_PASSWORD` before the first start of any non-local deployment; otherwise whoever reaches the URL first can sign in as `admin` / `admin`.
+- Keep `JWT_SECRET` in a secret manager; it signs all sessions.
+- `POST /api/playwright/report` is unauthenticated: anyone who can reach the server can create runs and test cases in any project. Restrict network access to it (allow only CI networks/VPN) until API tokens exist.
+- Sessions are not revoked on password change.
+- No per-project permissions.
+- The login rate limiter is per instance (see [Scaling](#scaling)).
+- CSRF protection relies on the `SameSite=Lax` session cookie.
+- Security headers must be added at the proxy (see [Reverse Proxy and TLS](#reverse-proxy-and-tls)).
+- Use TLS to MySQL where the network is not trusted (`ssl` option in `DATABASE_URL`), and a database user limited to the QualityLoom database.
+- Keep dependencies updated: `pnpm audit`.
 
-2. **Test Restore Procedure**
-   ```bash
-   # Restore from backup
-   gunzip < backup_20250126_020000.sql.gz | mysql -u tmt_user -p test_management_tool
-   ```
+See also [SECURITY.md](../SECURITY.md).
 
-### Security Updates
+---
 
-**VPS:**
+## Kubernetes Example
+
+No Kubernetes manifests or Helm chart are provided in the repository. The following is an **example** to adapt, not a tested deployment. It assumes a Secret `qualityloom` with keys `DATABASE_URL`, `JWT_SECRET` and `INITIAL_ADMIN_PASSWORD`, and an image pushed to your registry.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qualityloom
+spec:
+  replicas: 2
+  # Recreate is the safe choice for releases that add migrations.
+  # RollingUpdate is fine for releases without new files in drizzle/.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: qualityloom }
+  template:
+    metadata:
+      labels: { app: qualityloom }
+    spec:
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: app
+          image: registry.example.com/qualityloom:<git-sha>
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - secretRef: { name: qualityloom }
+          env:
+            - name: TRUST_PROXY
+              value: "1"
+          # Startup: migrations + up to 300 s waiting for the startup lock
+          startupProbe:
+            httpGet: { path: /health, port: 3000 }
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            periodSeconds: 10
+          readinessProbe:
+            httpGet: { path: /health/ready, port: 3000 }
+            periodSeconds: 10
+          # Starting point only; not measured. Tune from observed usage.
+          resources:
+            requests: { memory: 256Mi, cpu: 100m }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qualityloom
+spec:
+  selector: { app: qualityloom }
+  ports:
+    - port: 80
+      targetPort: 3000
+```
+
+Expose the Service through your ingress with TLS, a 50 MB body limit and security headers (see [Reverse Proxy and TLS](#reverse-proxy-and-tls)). Set `TRUST_PROXY` to match the number of hops in front of the pods.
+
+---
+
+## Other Ways to Run It
+
+### Single container
+
 ```bash
-# Weekly security updates
-sudo apt update && sudo apt upgrade -y
+docker run -d --name qualityloom -p 3000:3000 \
+  -e DATABASE_URL='mysql://qualityloom:<password>@db-host:3306/qualityloom' \
+  -e JWT_SECRET='<value from your secret manager>' \
+  -e INITIAL_ADMIN_PASSWORD='<at least 8 characters>' \
+  -e TRUST_PROXY=1 \
+  qualityloom:<git-sha>
+```
 
-# Update the application
-cd /home/tmt/test-management-tool
-git pull
+Generate `JWT_SECRET` once (`openssl rand -hex 32`) and store it; do not generate a new one per deploy. To use another host port, change only the left side of `-p`.
+
+### Docker Compose (local development and evaluation only)
+
+`docker-compose.yml` runs `db` (MySQL 8.0, data in the `db_data` volume, published on 127.0.0.1 only) and `app` (built from the `Dockerfile`). Database passwords default to `test_user` / `test_password` / `root_password`. `JWT_SECRET` is required; compose refuses to start without it. It is not a production deployment.
+
+### Without Docker (Node 22 + PM2)
+
+Requires Node.js 22 and pnpm (via `corepack enable`).
+
+```bash
 pnpm install --frozen-lockfile
-
-# Rebuild and restart (migrations run at startup)
-pnpm build
-pm2 restart test-management-tool
+pnpm build                      # VITE_APP_TITLE / VITE_APP_LOGO are read from .env here
+NODE_ENV=production pm2 start dist/index.js --name qualityloom
+pm2 save && pm2 startup
 ```
 
-**Docker:** rebuild the image from the updated repository and replace the container; migrations run at startup.
+Run it from the repository root so `./drizzle` resolves, and set the runtime variables from [Configuration](#configuration) in the environment or `.env`. Upgrade: back up the database, `git pull`, `pnpm install --frozen-lockfile`, `pnpm build`, `pm2 restart qualityloom`.
 
-**Cloud Platforms:**
-- Automatic platform updates
-- Monitor for dependency vulnerabilities
-- Enable Dependabot on GitHub
+### Platform-as-a-Service
 
-### Log Management
-
-**Configure Log Rotation (VPS):**
-```bash
-sudo nano /etc/logrotate.d/test-management-tool
-```
-
-```
-/home/tmt/.pm2/logs/*.log {
-    daily
-    rotate 14
-    compress
-    delaycompress
-    notifempty
-    create 0640 tmt tmt
-    sharedscripts
-}
-```
-
----
-
-## Cost Estimation
-
-### Small Organization (10-20 users)
-
-**Cloud Platform Option:**
-- **Railway/Render**: $20-30/month
-- **Managed MySQL**: $15-25/month
-- **Domain**: $12/year
-- **Total**: ~$35-55/month
-
-**VPS Option:**
-- **DigitalOcean Droplet** (4GB): $24/month
-- **Managed MySQL**: $15/month
-- **Domain**: $12/year
-- **Total**: ~$40/month
-
-### Medium Organization (50-100 users)
-
-**Cloud Platform Option:**
-- **Railway/Render**: $50-80/month
-- **Managed MySQL**: $50-100/month
-- **Domain**: $12/year
-- **Total**: ~$100-180/month
-
-**VPS Option:**
-- **DigitalOcean Droplet** (8GB): $48/month
-- **Managed MySQL**: $50/month
-- **Domain**: $12/year
-- **Total**: ~$100/month
-
-### Large Organization (200+ users)
-
-**Cloud Platform Option:**
-- **Railway/Render**: $150-250/month
-- **AWS RDS MySQL**: $150-300/month
-- **Domain**: $12/year
-- **CDN** (Cloudflare): $20/month
-- **Total**: ~$320-570/month
-
----
-
-## Security Considerations
-
-### Application Security
-
-1. **Environment Variables**
-   - Never commit `.env` files to Git
-   - Use strong, unique passwords
-   - Rotate secrets regularly
-
-2. **Database Security**
-   - Use strong database passwords
-   - Enable SSL connections
-   - Restrict database access by IP
-   - Regular backups with encryption
-
-3. **HTTPS Only**
-   - Force HTTPS redirects
-   - Use HSTS headers
-   - Keep SSL certificates updated
-
-4. **Authentication**
-   - Change the default `admin` / `admin` password right after the first deployment (the app forces it at first login)
-   - Strong `JWT_SECRET` (at least 32 characters), kept in a secret manager
-   - Sessions last one year; rotating `JWT_SECRET` signs everyone out
-   - Passwords are stored as bcrypt hashes
-
-5. **API Security**
-   - Login rate limiting (10 failed attempts per IP per 15 minutes; set `TRUST_PROXY` behind a proxy)
-   - Input validation
-   - SQL injection prevention (handled by Drizzle ORM)
-   - `POST /api/playwright/report` does not require a login: anyone who can reach the URL can submit results for a project ID. Restrict network access to it accordingly.
-
-### Network Security
-
-**Firewall Rules (VPS):**
-```bash
-# Only allow necessary ports
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow ssh
-sudo ufw allow 'Nginx Full'
-sudo ufw enable
-```
-
-**Fail2Ban (VPS):**
-```bash
-# Install Fail2Ban
-sudo apt install fail2ban -y
-
-# Configure for SSH and Nginx
-sudo systemctl enable fail2ban
-sudo systemctl start fail2ban
-```
-
-### Regular Security Audits
-
-1. **Dependency Scanning**
-   ```bash
-   pnpm audit
-   pnpm audit --fix
-   ```
-
-2. **Update Dependencies Regularly**
-   ```bash
-   pnpm update --latest
-   ```
-
-3. **Monitor Security Advisories**
-   - Enable GitHub Dependabot
-   - Subscribe to security mailing lists
+Any platform that builds a `Dockerfile` and provides MySQL works; the same configuration, health check and upgrade rules apply.
 
 ---
 
 ## Deployment Checklist
 
-### Pre-Deployment
+**Before the first start**
+- [ ] Image built and tagged by git SHA (branding build args set if needed)
+- [ ] Empty MySQL 8.0/8.4 database and a user with the grants from [Permissions](#permissions)
+- [ ] `max_connections` sized for replicas × `connectionLimit`
+- [ ] Secret with `DATABASE_URL`, `JWT_SECRET`, `INITIAL_ADMIN_PASSWORD`
+- [ ] `TRUST_PROXY` set to the number of proxy hops
+- [ ] Proxy/ingress: TLS, forwarded headers, 50 MB body limit, security headers
+- [ ] Network access to `POST /api/playwright/report` restricted to CI networks/VPN
+- [ ] Automated database backups configured and a restore tested
 
-- [ ] Database created and configured (empty; the app creates the tables)
-- [ ] Environment variables documented (`DATABASE_URL`, `JWT_SECRET`, `TRUST_PROXY`)
-- [ ] SSL certificate obtained
-- [ ] Domain DNS configured
-- [ ] Backup strategy implemented
-- [ ] Monitoring tools configured
-
-### Deployment
-
-- [ ] Application deployed
-- [ ] Environment variables set
-- [ ] `GET /health` returns 200 through the proxy
-- [ ] HTTPS working correctly
-- [ ] Logged in as `admin` / `admin` and set a new password
+**After deployment**
+- [ ] `/health` and `/health/ready` return 200 through the proxy
+- [ ] Signed in as `admin` and set a new password
+- [ ] Users created in `/admin`
 - [ ] CI runners can reach `POST /api/playwright/report`
-
-### Post-Deployment
-
-- [ ] Create user accounts in the admin panel
-- [ ] Test all major features
-- [ ] Set up automated backups
-- [ ] Configure monitoring alerts
-- [ ] Document access credentials
-- [ ] Train initial users
-- [ ] Create user documentation
+- [ ] Alerts on readiness failures and restarts
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
+Startup errors visible in the logs:
 
-**Database Connection Failed:**
-```bash
-# Check database is running
-sudo systemctl status mysql
+| Message | Cause / fix |
+|---|---|
+| `Missing required environment variables` | Set `DATABASE_URL` and `JWT_SECRET`. |
+| `JWT_SECRET must be at least 32 characters long` | Use a longer secret (`openssl rand -hex 32`). |
+| `JWT_SECRET is still the example placeholder` | Generate a real secret; the `.env.example` value is public. |
+| `INITIAL_ADMIN_PASSWORD must be at least 8 characters long` | Use a longer value, or leave it unset. |
+| `Timed out after 300s waiting for another instance to finish migrating` | Another instance held the `qualityloom_startup` lock for 300 s. Check whether that instance is stuck in a migration (its logs, `SHOW PROCESSLIST`); restart once it has finished or died. |
+| `Could not listen on port 3000` | Another process uses the port; the app does not fall back to another one. |
+| A migration error | Check the database user has the grants from [Permissions](#permissions). |
 
-# Test connection
-mysql -u tmt_user -p -h localhost test_management_tool
+**Database connection failed:** test with `mysql --defaults-extra-file=<option file> -h <host> <database>` from the app's network. Check that special characters in the password are URL-encoded in `DATABASE_URL` (`@` → `%40`), and that the TLS option is URL-encoded JSON.
 
-# Check DATABASE_URL format
-echo $DATABASE_URL
-```
+**Readiness returns 503:** `/health/ready` could not run `SELECT 1` within 2 s. The database is unreachable, overloaded or out of connections (check `max_connections` against replicas × `connectionLimit`). The process itself is fine; `/health` stays 200.
 
-**Application Won't Start:**
-```bash
-# Check Node.js version
-node --version  # Should be 22.x+
+**413 on Playwright report upload:** the proxy's body limit is too small. Set `client_max_body_size 50m;` (nginx) or the ingress equivalent.
 
-# Check logs (or docker logs qualityloom)
-pm2 logs test-management-tool
+**Login blocked for everyone (rate limit):** behind a proxy without `TRUST_PROXY`, all users share the proxy's IP. Set `TRUST_PROXY` to the number of hops. If the admin password is lost, another admin can reset it in `/admin`.
 
-# Rebuild application
-pnpm build
-```
+**Branding does not change:** `VITE_APP_TITLE`/`VITE_APP_LOGO` are build args; rebuild the image with `--build-arg`.
 
-Common causes visible in the logs:
-- `Missing required environment variables`: set `DATABASE_URL` and `JWT_SECRET`
-- `JWT_SECRET must be at least 32 characters long`: use a longer secret
-- `JWT_SECRET is still the example placeholder`: generate a real secret (`openssl rand -hex 32`); the `.env.example` value is public
-- `Could not listen on port 3000`: another process uses the port; the app does not fall back to another one
-- A migration error: check that the database user can create and alter tables
-
-**Login Blocked for Everyone (rate limit):**
-- Behind a proxy without `TRUST_PROXY`, all users share the proxy's IP for rate limiting. Set `TRUST_PROXY=1`.
-- If the admin password is lost, another admin can reset it from the admin panel.
-
-**SSL Certificate Issues:**
-```bash
-# Renew Let's Encrypt certificate
-sudo certbot renew
-
-# Check certificate expiration
-sudo certbot certificates
-```
-
-**Playwright Results Not Arriving:**
-- Check that the CI runner can reach the app URL (internal-only hosting is not reachable from GitHub-hosted runners)
-- Check the project ID used by the reporter (Settings > Playwright Reporter)
+**Playwright results not arriving:** check that the CI runner can reach the app URL (internal-only hosting is not reachable from GitHub-hosted runners) and that the reporter uses the right project ID (Settings > Playwright Reporter).
 
 ---
 
-## Support and Resources
-
-### Documentation
-
-- **Application Docs**: See `README.md` in repository
-- **Local Setup**: See `LOCAL_SETUP.md`
-
-### Getting Help
-
-- **GitHub Issues**: Report bugs and feature requests
-- **Email Support**: support@your-organization.com
-- **Internal Wiki**: Link to internal documentation
-
-### Useful Commands Reference
-
-```bash
-# Docker
-docker build -t qualityloom .
-docker logs -f qualityloom
-docker restart qualityloom
-
-# Application Management (PM2)
-pm2 start/stop/restart test-management-tool
-pm2 logs test-management-tool
-pm2 monit
-
-# Database
-mysql -u tmt_user -p test_management_tool
-mysqldump -u tmt_user -p test_management_tool > backup.sql
-
-# Nginx
-sudo systemctl restart nginx
-sudo nginx -t
-sudo tail -f /var/log/nginx/error.log
-
-# SSL
-sudo certbot renew
-sudo certbot certificates
-
-# System
-sudo systemctl status mysql
-sudo systemctl status nginx
-df -h  # Check disk space
-free -h  # Check memory
-top  # Check CPU usage
-```
-
----
-
-## Conclusion
-
-This deployment guide provides comprehensive instructions for hosting QualityLoom. Choose the deployment option that best fits your organization's needs, budget, and technical expertise.
-
-For additional assistance or custom deployment requirements, please contact your IT team or the application maintainers.
-
-**Last Updated**: January 2025  
-**Version**: 1.0.0
-
+**Last updated:** November 2026

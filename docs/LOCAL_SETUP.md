@@ -59,6 +59,10 @@ Its defaults already match the compose database:
 DATABASE_URL=mysql://test_user:test_password@127.0.0.1:3306/test_management_tool
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
 TRUST_PROXY=0
+
+# Optional: password for the "admin" account created on first start (default "admin")
+INITIAL_ADMIN_PASSWORD=
+
 VITE_APP_TITLE=QualityLoom
 VITE_APP_LOGO=
 ```
@@ -66,6 +70,7 @@ VITE_APP_LOGO=
 **Important Notes:**
 - `JWT_SECRET` must be at least 32 characters; the app refuses to start otherwise
 - `PORT` is optional (default 3000)
+- `INITIAL_ADMIN_PASSWORD` is optional: password (at least 8 characters) for the `admin` account created on first start, instead of `admin`. `VITE_APP_TITLE`/`VITE_APP_LOGO` are read when `pnpm dev` or `pnpm build` runs, not at runtime
 
 ### 5. Start the Development Server
 

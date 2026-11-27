@@ -35,12 +35,16 @@ JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
 # Number of reverse proxies in front of the app. 0 when accessed directly
 TRUST_PROXY=0
 
-# Optional: name and logo shown inside the app
+# Optional: password for the "admin" account created on first start (default "admin")
+INITIAL_ADMIN_PASSWORD=
+
 VITE_APP_TITLE=QualityLoom
 VITE_APP_LOGO=
 ```
 
 `PORT` is optional (default 3000). `pnpm dev` sets `NODE_ENV=development` for you.
+
+`INITIAL_ADMIN_PASSWORD` is optional: the password (at least 8 characters) for the `admin` account created on first start, instead of `admin`. `VITE_APP_TITLE` and `VITE_APP_LOGO` are read when `pnpm dev` or `pnpm build` runs, not at runtime.
 
 ## Database Setup
 
